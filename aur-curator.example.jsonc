@@ -1,0 +1,57 @@
+{
+  // aur-curator example configuration.
+  // Comments (// and /* */) are allowed. Trailing commas are not.
+  // Copy this file, edit the values, and pass its path as the first
+  // argument to aur-curator. Unknown keys are silently ignored, so
+  // check spelling carefully.
+
+  // ── Required ───────────────────────────────────────────────────────
+  // aur-curator will not start if any of these is missing or empty.
+
+  // Workspace root. aur-curator keeps one Git repository per curated
+  // package here, plus its own state under <rootPath>/.aur-curator/.
+  "rootPath": "/home/you/aur",
+
+  // Local pacman repository that built packages are published to.
+  // pacman downloads as an unprivileged user, so this directory (and
+  // every directory above it) must be readable by that user. A path
+  // outside your home directory avoids permission problems.
+  "repositoryPath": "/srv/aur-curator/repo",
+
+  // Your Gitea instance and the organization that holds the curated
+  // package repositories. Import creates a repository there; Remove
+  // deletes it.
+  "giteaBaseURL": "https://gitea.example.com",
+  "giteaOrg": "aur",
+
+  // Gitea API token. Required, but you can supply it either way:
+  //   - environment variable AUR_CURATOR_GITEA_TOKEN (recommended;
+  //     it always wins over this file), or
+  //   - the "giteaToken" key below.
+  // If the token is read from this file and the file is readable by
+  // group or others, aur-curator prints a warning.
+  // "giteaToken": "<your-gitea-token>",
+
+  // ── Optional ───────────────────────────────────────────────────────
+
+  // Repository database file name inside repositoryPath.
+  // Default: "custom.db.tar.gz". The part before ".db" is the repository
+  // name to use as the section header in /etc/pacman.conf, e.g. [custom].
+  "repoDBName": "custom.db.tar.gz",
+
+  // Build backend. Default: "makepkg" (currently the only backend).
+  "builderBackend": "makepkg",
+
+  // Activity log: one line per import, review decision, merge, build,
+  // confirm and publish. Default: <rootPath>/.aur-curator/activity.log
+  // "activityLogPath": "/home/you/aur/.aur-curator/activity.log",
+
+  // Merge a review as soon as you Approve it, instead of waiting for you
+  // to press M. Merging only ever follows an Approve you made; nothing is
+  // merged without one. Default: false.
+  "autoMerge": false,
+
+  // Run the analyzers right after a successful Import. A failed
+  // analysis is reported but does not undo the Import. Default: false.
+  "autoAnalyzeAfterImport": false
+}

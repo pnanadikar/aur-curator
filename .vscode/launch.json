@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug AUR Curator",
+      "type": "go",
+      "request": "launch",
+      "mode": "exec",
+      "program": "${workspaceFolder}/bin/aur-curator-debug",
+      "args": [
+        "${input:packageDir}",
+        "--trace",
+        "/tmp/aur-curator.trace"
+      ],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Makefile Debug Build",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Run AUR Curator",
+      "type": "go",
+      "request": "launch",
+      "mode": "exec",
+      "program": "${workspaceFolder}/bin/aur-curator",
+      "args": [
+        "${input:packageDir}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Makefile Build",
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "packageDir",
+      "type": "promptString",
+      "description": "Path to the config file",
+      "default": "~/.config/aur-curator/aur-curator.jsonc"
+    }
+  ]
+}

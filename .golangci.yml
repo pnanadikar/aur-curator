@@ -1,0 +1,23 @@
+version: "2"
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+  govet:
+    check-shadowing: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck    # Checks for unhandled errors
+    - govet       # Reports suspicious constructs
+    - ineffassign # Detects unused assignments
+    - staticcheck # The "gold standard" for bugs
+    - unused      # Finds unused constants, variables, etc.
+
+formatters:
+  enable:
+    - gofmt       # Checks that code is gofmt'd
+
+run:
+  timeout: 5m

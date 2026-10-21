@@ -1,0 +1,41 @@
+# Binaries
+/aur-curator
+/cmd/aur-curator/aur-curator
+/docs/archive
+
+*.exe
+*.out
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build cache
+bin/
+dist/
+
+# Logs
+*.log
+
+# VS Code
+.vscode/*.log
+.vscode/*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go test output
+*.test
+
+# Coverage
+coverage.out
+
+# Local env files
+.env
+
+# Generated dumps (Gitea is the source of truth)
+issues.md
+
+# Vim tag
+tags
