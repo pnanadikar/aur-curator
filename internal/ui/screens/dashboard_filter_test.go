@@ -263,8 +263,6 @@ func TestCardFilterRegression_CardToShowMatchesPredicate(t *testing.T) {
 	// produces correct results — i.e. selecting a card filters to the
 	// packages that match that card's semantic meaning, not a neighbor's.
 
-	m := NewDashboardModel(deps.Dependencies{})
-
 	// Define the expected predicate outcome for a representative set of
 	// packages that would be visible in the dashboard.
 	packages := []struct {
@@ -288,6 +286,10 @@ func TestCardFilterRegression_CardToShowMatchesPredicate(t *testing.T) {
 	for _, cardID := range cards {
 		t.Run(string(cardID), func(t *testing.T) {
 			t.Parallel()
+
+			// Each subtest gets its own model: subtests run in parallel and
+			// some write to the model's maps (aurStaleByPkg, updates).
+			m := NewDashboardModel(deps.Dependencies{})
 
 			pred, ok := m.cardFilterMap[cardID]
 			if !ok {
@@ -318,9 +320,6 @@ func TestCardFilterRegression_CardToShowMatchesPredicate(t *testing.T) {
 			// Verify each package's individual result.
 			for _, pkg := range packages {
 				got := pred(domain.PackageName(pkg.name), pkg.lifecycle, pkg.build)
-				if !ok {
-					continue
-				}
 
 				switch cardID {
 				case CardPackages:

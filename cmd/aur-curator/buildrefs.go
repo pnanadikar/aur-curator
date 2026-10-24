@@ -57,7 +57,7 @@ func packageBuildRefs(bs domain.BuildStore, pkg domain.PackageName) ([]domain.Bu
 // record's BuildID. It returns an error if any build record or the
 // artifact list cannot be read, including a partial ListAll error:
 // with unknown references, no build directory is safe to delete.
-func collectBuildRefs(bs domain.BuildStore, as store.ArtifactStore, pkgs []domain.PackageName) (map[domain.BuildID]bool, error) {
+func collectBuildRefs(bs domain.BuildStore, as domain.ArtifactStore, pkgs []domain.PackageName) (map[domain.BuildID]bool, error) {
 	refs := make(map[domain.BuildID]bool)
 	for _, pkg := range pkgs {
 		ids, err := packageBuildRefs(bs, pkg)
@@ -100,7 +100,7 @@ func orphanBuildDirs(dirs []string, refs map[domain.BuildID]bool) []string {
 // directory is known to be safe. It returns the number of directories
 // removed and the findings to report.
 func sweepOrphanBuildDirs(ctx context.Context, activityLogPath string, paths *store.StorePaths,
-	bs domain.BuildStore, as store.ArtifactStore, pkgs []domain.PackageName) (int, []string) {
+	bs domain.BuildStore, as domain.ArtifactStore, pkgs []domain.PackageName) (int, []string) {
 
 	entries, err := os.ReadDir(paths.BuildsDir())
 	if err != nil {

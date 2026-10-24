@@ -1,10 +1,16 @@
 # Domain Model: aur-curator
 
-> Last updated: 2026-10-19
+> Last updated: 2026-10-23
 > Status: Active
-> Companion docs: architecture.md, interfaces.md, go-domain-structs.md, workflow.md, risk-analysis.md
->
-> First draft. This document captures the core domain entities and their responsibilities. The model is expected to evolve as interfaces and persistence are refined.
+> Companion docs: architecture.md, interfaces.md, workflow.md, risk-analysis.md
+> Code: `internal/domain`
+
+This document defines aur-curator's domain entities: what each one
+represents, which attributes are stored and which are derived, and the
+invariants that hold. It does not copy the Go types — `internal/domain`
+is the listing. Read the code for field names and this document for what
+they mean and why they exist. (It replaces the former
+`go-domain-structs.md`.)
 
 ## Design Principles
 
@@ -15,41 +21,121 @@
 
 ---
 
-1. [Package](#package)
-2. [Review](#review)
-3. [Finding](#finding)
-4. [RiskAssessment](#riskassessment)
-5. [Build](#build)
-6. [Artifact](#artifact)
-7. [GitRepository](#gitrepository)
-8. [PackageRepository](#packagerepository)
-9. [PolicyConfig](policyconfig)
-10. [WorkspaceConfig](#workspaceconfig)
-11. [Workspace](#workspace)
+1. [Go Mapping](#go-mapping)
+2. [Package](#package)
+3. [Review](#review)
+4. [Finding](#finding)
+5. [RiskAssessment](#riskassessment)
+6. [Build](#build)
+7. [Artifact](#artifact)
+8. [GitRepository](#gitrepository)
+9. [PackageRepository](#packagerepository)
+10. [PolicyConfig](#policyconfig)
+11. [WorkspaceConfig](#workspaceconfig)
+12. [Workspace](#workspace)
+13. [Aggregate Relationships](#aggregate-relationships)
+14. [Open Questions](#open-questions)
+
+## Go Mapping
+
+### Rules
+
+- `internal/domain` holds structs, enums, ID types and store interfaces
+  only — **no logic**. Behaviour lives in dedicated packages: lifecycle
+  derivation in `internal/lifecycle`, severity and risk in
+  `internal/policy`, review workflow in `internal/review`.
+- Only **stored** attributes become struct fields. Derived values
+  (lifecycle state, local and upstream version, `Finding` severity,
+  repository status) are never fields; they are computed on read.
+- Relationships are expressed by typed IDs or by the package name, not by
+  pointers between entities.
+- Store interfaces are declared beside the struct they persist
+  (`ReviewStore` in `review.go`, `BuildStore` in `build.go`,
+  `ArtifactStore` in `artifact.go`; the last moved there in #394). Stores
+  only store: they never derive lifecycle, compute status, or validate Git
+  state. The implementations are in `internal/store/json` and write under
+  `<rootPath>/.aur-curator/`, never inside a package's own git repository.
+- Three entities have no store: `WorkspaceConfig` and `PackageRepository`
+  are built from the config file at startup, and `PolicyConfig` is not
+  persisted yet (§ PolicyConfig).
+- The storage format is an implementation detail and never appears in
+  `internal/domain`.
+
+### Files
+
+| File | Contents |
+| --- | --- |
+| `ids.go` | ID types |
+| `id_generators.go` | `NewFindingID`, `NewRiskAssessmentID` |
+| `package.go` | `Package` (unused — § Concepts Without a Live Go Type) |
+| `review.go` | `Review`, `ReviewStatus`, `FindingsStatus`, `ReviewStore`, `ErrNotFound` |
+| `finding.go` | `Finding` |
+| `risk_assessment.go` | `Severity`, `RiskAssessment` |
+| `build.go` | `BuildStatus`, `Build`, `BuildStore` |
+| `artifact.go` | `Artifact`, `ArtifactStore` |
+| `repository.go` | `PackageRepository` |
+| `policy_config.go` | `PolicyConfig` |
+| `workspace.go` | `Secret`, `WorkspaceConfig`, `Workspace` (unused — § Concepts Without a Live Go Type) |
+
+### Identifiers
+
+- **`PackageName`** is a package's sole identifier: its actual name
+  (e.g. `yay`). There is no surrogate ID. It is used everywhere a package
+  is referenced — `Review.PackageName`, `Build.PackageName`,
+  `Artifact.PackageName`, and every store's key. (Earlier drafts had a
+  `PackageID` plus a redundant `Name` field; resolved to `PackageName`
+  alone.)
+- **`ReviewID`** is deterministic: `<name>@<upstreamCommit>`
+  (§ Review Identity).
+- **`FindingID`** and **`RiskAssessmentID`** have no natural key and are
+  random 128-bit hex values from `id_generators.go`. `ReviewID` and
+  `PackageName` must never be generated this way.
+- **`GitRepositoryID`**, **`WorkspaceID`**, **`PackageRepositoryID`** and
+  **`PolicyConfigID`** exist only for fields that reference nothing
+  persisted; outside `internal/domain` they appear only as filler values
+  in test fixtures (§ GitRepository, § PackageRepository, § PolicyConfig,
+  § Workspace; #407).
+
+### Concepts Without a Live Go Type
+
+**Package** and **Workspace** are real domain concepts, but their structs
+(`package.go`, and `Workspace` in `workspace.go`) are not used anywhere
+outside `internal/domain`. Packages are handled by `PackageName`
+throughout, with each relationship resolved through a store, and the
+application works with `WorkspaceConfig` directly. Both structs, and the ID
+types only they use, are slated for removal (#407). Their sections below
+describe the concepts.
+
+---
 
 ## Package
 
 ### Purpose
 
-Represents one curated AUR package managed by aur-curator.
+Represents one curated AUR package managed by aur-curator. A package is
+curated if and only if its directory exists under the workspace root —
+Package Catalog discovers the set live (`interfaces.md` § Package
+Catalog).
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
-| name | Canonical package name | Stored |
-| lifecycleState | Current workflow state | Derived |
+| --- | --- | --- |
+| name | Canonical package name | Stored — `PackageName` |
+| lifecycleState | Current workflow state | Derived — § Lifecycle, `internal/lifecycle` |
+| localVersion | Version at the curated commit | Derived — from a committed `PKGBUILD`, never the working tree (`workflow.md` § Local Version) |
 | upstreamVersion | Latest upstream version | Derived |
-| originRepository | Trusted Git repository | Relationship — one facet of GitRepositoryID → GitRepository.OriginRemote |
-| upstreamRepository | AUR repository | Relationship — one facet of GitRepositoryID → GitRepository.UpstreamRemote |
-| currentReview | Active review (if any) | Relationship — see CurrentReviewID |
-| latestBuild | Most recent build attempt, any status | Relationship — see LatestBuildID |
-| lastSuccessfulBuild | Most recent successful build — the basis of Built / Confirmed / Published | Relationship — see Build § Latest Attempt and Last Success |
-| publishedArtifact | Currently published package | Derived |
+| origin / upstream | Personal Gitea repository / AUR repository | Convention — the `origin` and `upstream` remotes of the clone at `<rootPath>/<name>`; not stored (§ GitRepository) |
+| currentReview | Active review, if any | Relationship — `ReviewStore.Get(name)` |
+| latestBuild | Most recent build attempt, any status | Relationship — `BuildStore.Get(name)` |
+| lastSuccessfulBuild | Most recent successful build — the basis of Built / Confirmed / Published | Relationship — `BuildStore.GetLastSuccess(name)` (§ Build → Latest Attempt and Last Success) |
+| artifacts | Artifacts of the last successful build | Relationship — `ArtifactStore.GetArtifactsByPackage(name)` |
+| published | Whether the last success is published | Derived — the last success's `published` flag (§ Artifact) |
 
-### Ownership
-
-Owns the lifecycle of a single curated package.
+These relationships are resolved through the stores, keyed by name. The
+`Package` struct, with its `GitRepositoryID`, `CurrentReviewID` and
+`LatestBuildID` fields, is unused (§ Go Mapping → Concepts Without a Live
+Go Type).
 
 ### Lifecycle
 
@@ -61,7 +147,8 @@ Review Pending → Approved → Merged → Built → Confirmed → Published
 Lifecycle state is **derived, never stored**. Transitions, their guards,
 and their failure outcomes are defined in `workflow.md` § State Transitions
 and Action Availability (the transition matrix) and are not repeated here.
-This section defines what each state means and how it is derived:
+This section defines what each state means and how it is derived
+(`internal/lifecycle`, #312, #309):
 
 1. **No review** → `Not Reviewed`.
 2. **Review Pending / Rejected** → that state, from `Review.status`. The
@@ -95,7 +182,7 @@ Consequences:
 `Unknown` and `Fetched` are not states: Import creates a `Review` record
 synchronously (`workflow.md` § Import, #156), so a package's first
 observable state is `Review Pending`. There is no `Build Pending` state
-either — a `domain.Build` holds `BuildPending` only briefly as an internal
+either — a build holds `BuildPending` only briefly as an internal
 initialization marker before becoming `BuildRunning`.
 
 `Confirmed` is a workflow gate, not a content check — it applies
@@ -103,27 +190,12 @@ package-wide to the artifact(s) of the last successful build as a single
 unit, requiring explicit user acknowledgement before Publish. It performs no
 independent verification.
 
-> **Implementation status (2026-10-08):** rules 1–4 are implemented
-> (#312, #309).
-
 ### Relationships
 
-- has one GitRepository
-- has one current Review (see Review § Current, Not Historical)
-- has many Builds
-- has many Artifacts
+- has one current Review (§ Review → Review Scope: Current, Not Historical)
+- has a latest build attempt and at most one last successful build
+- has the Artifacts of its last successful build
 - belongs to one Workspace
-
-### Design Note: Package Identity (DOM-001 / DOM-002)
-
-`name` is the package's sole identifier — there is no separate surrogate
-ID. This was previously ambiguous: `go-domain-structs.md` carried both a
-typed `PackageID` and a redundant `Name string` field, while this
-Attributes table only ever listed `name`. Resolved: the Go type is
-`PackageName` (not `PackageID`), used everywhere a package is
-referenced — `Package.Name`, `Review.PackageName`, `ReviewStore`'s
-parameters, `Build.PackageName`. See `domain-package-review.md`
-DOM-001/DOM-002 for the full history of this inconsistency.
 
 ---
 
@@ -131,36 +203,60 @@ DOM-001/DOM-002 for the full history of this inconsistency.
 
 ### Purpose
 
-Captures the current human review of a specific upstream repository state. A Review brings together the review findings, the policy-derived risk assessment, and the reviewer's 
-decision as a single auditable unit.
+Captures the current human review of a specific upstream repository state.
+A Review brings together the review findings, the policy-derived risk
+assessment, and the reviewer's decision as a single auditable unit.
+
+Code: `review.go`.
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
+| --- | --- | --- |
 | id | Unique identifier, deterministic from packageName@upstreamCommit — see § Review Identity | Stored |
 | packageName | Reviewed package | Stored |
 | upstreamCommit | Commit reviewed — the end of the reviewed range | Stored |
 | baseCommit | Start of the reviewed range: the merge base of local `master` and `upstream/master` when the review was created; empty on a first review (Import), meaning "nothing reviewed before" — see § Reviewed Range | Stored |
 | status | Pending / Approved / Rejected | Stored |
 | decisionTime | Approval or rejection timestamp | Stored |
-| reviewerNotes | Optional notes | Stored |
-| rationale | Optional explanation, captured on approval-without-analysis or rejection | Stored |
+| reviewerNotes | Optional notes, captured on approval | Stored |
+| rationale | Optional explanation, captured on rejection | Stored |
 | findings | Findings produced during review (may be empty; see findingsStatus) | Stored |
 | findingsStatus | Not Run / Run — distinguishes "never analyzed" from "analyzed, zero findings" | Stored |
-| riskAssessment | Policy Engine's aggregate risk rollup, computed once at RecordDecision — see § RiskAssessment | Stored (nil until decided) |
+| riskAssessment | Policy Engine's aggregate risk rollup, computed once when the decision is recorded — see § RiskAssessment | Stored — nil until decided, and stays nil if the review was decided without analyzers having run |
 
 ### Ownership
 
 Owns review decisions and metadata that cannot be reconstructed from Git.
 The trust decision itself (outcome, rationale, timestamp) is not a separate
-entity — it is carried directly by `status`, `rationale`, and `decisionTime`
-above.
+entity — there is no `Decision` struct. It is carried directly by
+`status`, `rationale`, and `decisionTime` above.
 
 ### Lifecycle
 
 Pending → Approved or Rejected. Once decided, status and decisionTime are
-immutable.
+immutable. `status` is **stored, not derived**: it is the decision record,
+and is never widened with values such as "Merged" — whether the reviewed
+commit is merged is a Git fact (§ Package → Lifecycle, rule 3).
+
+### FindingsStatus
+
+`findingsStatus` and `findings` together represent three distinct states.
+They must never collapse into one another, in storage or in the UI:
+
+| findingsStatus | findings | Meaning |
+| --- | --- | --- |
+| `not_run` | nil/empty | Analyzers were never run for this review |
+| `run` | empty | Analyzers ran and found nothing |
+| `run` | non-empty | Analyzers ran and found N issues |
+
+The Review screen's Findings tab label (`Not Run` / `0 findings` /
+`N findings`) depends on this distinction.
+
+Only a complete analyzer run sets `run`. If any analyzer fails, or the run
+is cancelled, nothing is saved: `findingsStatus` and `findings` keep their
+previous values and the failure is reported, so a failed analyzer never
+reads as one that found nothing (#410).
 
 ### Review Scope: Current, Not Historical
 
@@ -171,9 +267,8 @@ trusted?", not a live status of local state. The exact range it covers is
 stored (`baseCommit` → `upstreamCommit`, § Reviewed Range), so the review
 shows the same changes before and after Merge.
 
-`ReviewStore` holds a single, current Review per package
-(`Package.currentReview`) — not a history of all past reviews. When a new
-upstream commit is fetched:
+`ReviewStore` holds a single, current Review per package — not a history
+of all past reviews. When a new upstream commit is fetched:
 
 - If the existing stored Review is still Pending, it is replaced by the
   new comparison (the old Pending review was never decided, so nothing is
@@ -203,10 +298,11 @@ side effect: if review initiation is ever invoked twice for a package at
 the same upstream commit, it produces the same ID rather than two IDs for
 what the domain model treats as one review.
 
-### Relationships
-
-- belongs to one Package
-- contains many Findings
+The ID is also what keeps a decision attached to the review it was made
+on. Analyses and decisions name the review they act on by its ID, and the
+Review Engine refuses them (`ReviewChangedError`, nothing recorded) when
+the stored review has a different one — when a Fetch replaced it while it
+was on screen (#399; `workflow.md` § State Transitions, note 15).
 
 ### Reviewed Range
 
@@ -248,14 +344,30 @@ an error naming the missing commit instead of a diff. It never falls back
 to the live comparison, which would show something other than what was
 reviewed.
 
-Rule (2) of the old baseline invariant still matters: a new Fetch while a
-Review is Pending replaces that Review (with a new base) rather than
-reconciling two live comparisons (§ Review Scope: Current, Not Historical).
-Rule (1) — local `master` only advances via Merge — is no longer needed for
-correctness, since the base is recorded rather than recomputed. Local
-`master` is an ordinary git repository and commits can reach it from
-outside the app; such commits are unreviewed, and are detected and flagged
-rather than blocked (`workflow.md` § Local Commits Not on Upstream, #316).
+A new Fetch while a Review is Pending replaces that Review (with a new
+base) rather than reconciling two live comparisons (§ Review Scope:
+Current, Not Historical). Local `master` is an ordinary git repository and
+commits can reach it from outside the app; because the base is recorded
+rather than recomputed, such commits do not corrupt the reviewed range.
+They are unreviewed, and are detected and flagged rather than blocked
+(`workflow.md` § Local Commits Not on Upstream, #316).
+
+### ReviewStore
+
+- `Get(name)` returns the package's one current Review, or `ErrNotFound`.
+- `Save(name, review)` overwrites it.
+- `Delete(name)` removes it; used when a package is removed from curation.
+
+The JSON implementation writes
+`<rootPath>/.aur-curator/packages/<name>/review.json`. `RiskAssessment` is
+nested inside `Review` rather than stored separately, because `Review` is
+the only record `ReviewStore` persists.
+
+### Relationships
+
+- belongs to one Package
+- contains many Findings
+- contains at most one RiskAssessment
 
 ---
 
@@ -265,25 +377,32 @@ rather than blocked (`workflow.md` § Local Commits Not on Upstream, #316).
 
 Represents a single observation produced by an analyzer.
 
+Code: `finding.go`.
+
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
-| id | Identifier | Stored |
+| --- | --- | --- |
+| id | Identifier (random, `NewFindingID`) | Stored |
+| reviewID | Owning review | Stored |
 | analyzer | Producing analyzer | Stored |
 | category | Checksum, URL, PKGBUILD, etc. | Stored |
 | severity | Low / Medium / High | Derived — computed by Policy Engine from `category` via default/user-override mapping, not assigned by the analyzer |
 | summary | Short description | Stored |
-| details | Supporting evidence | Stored |
+| details | Supporting evidence (opaque JSON, shape owned by the analyzer) | Stored |
 | location | Optional file/line reference | Stored |
 
 ### Ownership
 
-Owned by a Review. Note: `severity` is not owned by Finding itself — it is computed on read by Policy Engine from `category`, so two identical categories always resolve to the same severity at a given point in time, but that resolution can change if the user's policy overrides change.
+Owned by a Review. `severity` is not owned by Finding itself and is never
+a field — it is computed on read by Policy Engine from `category`, so two
+identical categories always resolve to the same severity at a given point
+in time, but that resolution can change if the user's policy overrides
+change. Severity only becomes stored inside a `RiskAssessment` snapshot.
 
 ### Lifecycle
 
-Created during analysis → Presented → Archived with Review
+Created during analysis → Presented → Replaced with the Review
 
 ### Relationships
 
@@ -295,26 +414,63 @@ Created during analysis → Presented → Archived with Review
 
 ### Purpose
 
-Represents the Policy Engine's objective assessment of a Review's findings. Computed as an aggregate rollup of the severities of the Review's Findings, it records the evaluated risk independently of the human review decision.
+Represents the Policy Engine's objective assessment of a Review's findings.
+Computed as an aggregate rollup of the severities of the Review's Findings
+— one per Review, not one per Finding — it records the evaluated risk
+independently of the human review decision.
+
+Code: `risk_assessment.go`.
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
-| id | Identifier | Stored |
-| review | Assessed review | Stored |
+| --- | --- | --- |
+| id | Identifier (random, `NewRiskAssessmentID`) | Stored |
+| reviewID | Assessed review | Stored |
 | highestSeverity | Highest severity among the review's findings | Stored (snapshot) |
 | countBySeverity | Count of findings per severity | Stored (snapshot) |
 | policyVersion | Policy Engine mapping version in effect when computed | Stored |
 | rationale | Optional explanation | Stored |
 
+`Severity` has the three values defined in `risk-analysis.md`: `low`,
+`medium`, `high`.
+
 ### Ownership
 
-Owned by a Review. Computed once by Policy Engine and frozen — unlike Finding.severity, which is derived live and can change if policy overrides change, RiskAssessment is a point-in-time audit snapshot: it records what the reviewer actually saw at decision time, tagged with the policy version that produced it. This mirrors "Git is an audit trail," extended to the review record itself.
+Owned by a Review. Computed once by Policy Engine and frozen — unlike
+Finding.severity, which is derived live and can change if policy overrides
+change, RiskAssessment is a point-in-time audit snapshot: it records what
+the reviewer actually saw at decision time, tagged with the policy version
+that produced it. This mirrors "Git is an audit trail," extended to the
+review record itself.
+
+Its fields look derived but are deliberately stored; this is the one
+exception among values that are otherwise computed on read.
 
 ### Lifecycle
 
-Computed at review time → immutable thereafter
+Computed when the decision is recorded → immutable thereafter
+
+### Timing
+
+A RiskAssessment is computed exactly once, in `RecordDecision`, at the
+moment `status` changes from Pending to Approved **or** Rejected — not
+when analysis finishes. It is an audit record of what the reviewer saw,
+so it is made for both outcomes. Until then, finding severity is resolved
+live (`risk-analysis.md` § Severity Over Time).
+
+It is computed only if analyzers ran (`findingsStatus = run`). A review
+decided without analysis has **no** RiskAssessment — nil, not an empty
+one — so "never analyzed" stays distinguishable here too (§ Review →
+FindingsStatus).
+
+Two details of the stored values:
+
+- With zero findings, `highestSeverity` is `low` and `countBySeverity` is
+  empty. Read the counts, not `highestSeverity` alone, to tell "nothing
+  found" from "only low findings".
+- `policyVersion` comes from the active `PolicyConfig`, which is empty
+  today (§ PolicyConfig), so it is currently an empty string.
 
 ### Relationships
 
@@ -326,21 +482,24 @@ Computed at review time → immutable thereafter
 
 ### Purpose
 
-Represent a single build execution for an approved commit. It provides the audit trail linking the reviewed source revision to the produced artifacts.
+Represents a single build execution for an approved commit. It provides the
+audit trail linking the reviewed source revision to the produced artifacts.
+
+Code: `build.go`.
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
+| --- | --- | --- |
 | id | Build identifier | Stored |
-| packageName | Owning package | Relationship — see PackageName |
-| backend | makepkg, chroot, etc. | Stored |
+| packageName | Owning package | Stored |
+| backend | Builder used (`makepkg`) | Stored |
 | status | Pending / Running / Success / Failed | Stored |
 | startTime | Build start | Stored |
-| endTime | Build completion | Stored |
+| endTime | Build completion (nil while running) | Stored |
 | logLocation | Build log reference | Stored |
 | reviewedCommit | Local `master` HEAD commit that was built (the merged, reviewed commit; see § Local Commits Not on Upstream in `workflow.md` for the exception) | Stored |
-| artifacts | Produced artifacts | Relationship — see ArtifactIDs |
+| artifactIDs | Produced artifacts | Relationship — `ArtifactID`s |
 | confirmed | User's explicit acknowledgement gating Confirmed → Published. Meaningful only on the last-success record | Stored |
 | confirmedAt | Confirmation timestamp (nil until confirmed) | Stored |
 | published | Set when Publish succeeds. Meaningful only on the last-success record — see Artifact `published` | Stored |
@@ -348,9 +507,8 @@ Represent a single build execution for an approved commit. It provides the audit
 | lastSuccessBuildID | ID of the package's last successful build | Stored |
 | lastFailureBuildID | ID of the package's last failed build (its directory, log and workspace are kept for inspection) | Stored |
 
-### Ownership
-
-Owns build execution history.
+Every record the build engine saves carries both `lastSuccessBuildID` and
+`lastFailureBuildID` (#308), so an interrupted build never loses them.
 
 ### Lifecycle
 
@@ -360,7 +518,7 @@ the manual Confirm and Publish steps.
 
 ### Latest Attempt and Last Success
 
-A package has two build records, each with one job:
+A package has two build records, both of type `Build`, each with one job:
 
 - **Latest attempt** — the most recent build, any status (Pending, Running,
   Success, Failed). It answers "how did the most recent build go?" and
@@ -386,17 +544,31 @@ failure, the previous success's `confirmed` / `published` flags were
 already overwritten; that package has no last success (derives `Merged`)
 until its next successful build.
 
+### BuildStore
+
+- `Get` / `Save` address the latest attempt.
+- `GetLastSuccess` / `SaveLastSuccess` address the last success (#309).
+  Confirm and Publish update only this record.
+- `ReadBuildLog` returns a build's log.
+- `Delete` removes the latest-attempt record only (used when a cancelled
+  first build leaves nothing to restore). The last success is unaffected;
+  Remove deletes the whole package store directory.
+
+The JSON implementation stores the two records as `build.json` and
+`last-success.json` in the package's store directory.
+
 ### Cancellation
 
 A cancelled build is not recorded. Cancelling produces no artifacts and no
 outcome, so there is nothing irreducible to store ("Store Only Irreducible
 State"); the fact that the user cancelled is recorded in the activity log
-instead. Concretely, the build engine restores the package's previous latest-attempt
-record (or removes it if this was the first build), deletes the cancelled
-build's own directory (log and workspace included), and leaves the previous failed build's directory and
-`LastFailureBuildID` untouched. The last-success record is never touched by
-a cancel. A cancelled rebuild therefore leaves the
-package's derived lifecycle state exactly as it was before the build started.
+instead. Concretely, the build engine restores the package's previous
+latest-attempt record (or removes it if this was the first build), deletes
+the cancelled build's own directory (log and workspace included), and
+leaves the previous failed build's directory and `lastFailureBuildID`
+untouched. The last-success record is never touched by a cancel. A
+cancelled rebuild therefore leaves the package's derived lifecycle state
+exactly as it was before the build started.
 
 ### Interruption
 
@@ -407,14 +579,14 @@ got to finish it. Unlike a cancel, nothing restores the previous record at
 that moment.
 
 At the next TUI start, before any operation runs, every latest-attempt
-record still at Pending or Running is marked failed, with the same effect as
-an ordinary failure: it becomes the package's last failure (its log and
+record still at Pending or Running is marked failed, with the same effect
+as an ordinary failure: it becomes the package's last failure (its log and
 workspace stay inspectable, and its directory is referenced and purged by
-the next failure), and the previous failed build's directory is purged. A closing
-line is appended to its log saying it was interrupted, and the activity log
-records it (`build <pkg> status interrupted`). The last-success record is
-never touched, so an interrupted rebuild leaves the derived lifecycle state
-as it was. Recovery is idempotent.
+the next failure), and the previous failed build's directory is purged. A
+closing line is appended to its log saying it was interrupted, and the
+activity log records it (`build <pkg> status interrupted`). The
+last-success record is never touched, so an interrupted rebuild leaves the
+derived lifecycle state as it was. Recovery is idempotent.
 
 Recovery is only safe because the TUI holds a single-instance lock on the
 workspace (an exclusive `flock`, released by the kernel when the process
@@ -434,32 +606,34 @@ recovery makes it the last failure. If the build fails before its pending
 record is saved (the clone, or that save itself), no record names it, so
 its directory is removed at once; if the process is killed in that window,
 the unnamed directory is removed by `check`'s orphaned-build-directory
-sweep. Any failure
-after makepkg succeeds — copying an artifact, computing its checksum,
-recording it, or saving the build record — records the build as failed.
-An artifact is never recorded with an empty checksum: `checksum` is what
-`check` matches against the package repository (`workflow.md` § Published:
-Stored Flag, Its Limits, and Drift Detection).
+sweep. Any failure after makepkg succeeds — copying an artifact, computing
+its checksum, recording it, or saving the build record — records the build
+as failed. An artifact is never recorded with an empty checksum:
+`checksum` is what `check` matches against the package repository
+(`workflow.md` § Published: Stored Flag, Its Limits, and Drift Detection).
 
 Not covered: an interrupted build's makepkg process group may keep running
-after a hard kill. Its workspace is kept with the interrupted build (above),
-so recovery deletes nothing under it.
+after a hard kill. Its workspace is kept with the interrupted build
+(above), so recovery deletes nothing under it.
 
 ### Confirmed
 
-`Build.Confirmed` is a workflow gate, not a content check. It records the 
-user's explicit acknowledgement that the produced artifacts are ready to 
-publish. It performs no independent verification of build output. `Confirmed` 
-is per-Build, not per-Artifact: multiple assets from one build are treated as 
-a single Package-level unit, so one confirmation covers the whole artifact set. 
-Every new successful build replaces the last success with `Confirmed = false` 
-(and `ConfirmedAt` nil) — a new artifact set always requires a fresh confirmation.
+`confirmed` is a workflow gate, not a content check. It records the user's
+explicit acknowledgement that the produced artifacts are ready to publish.
+It performs no independent verification of build output — a stored gate,
+like `Review.status`, not a computed check. `confirmed` is per-Build, not
+per-Artifact: multiple assets from one build are treated as a single
+Package-level unit, so one confirmation covers the whole artifact set.
+Every new successful build replaces the last success with
+`confirmed = false` (and `confirmedAt` nil) — a new artifact set always
+requires a fresh confirmation.
 
-**Commit guard.** Confirm and Publish act only on the last success whose `reviewedCommit` 
-equals local `master` HEAD. If it does not match — e.g. a merge has moved HEAD past 
-it — the operation refuses with a clear message, records nothing, and logs the refusal. 
-The UI disables these actions in that case too, but the guard is enforced in the 
-operation itself (`workflow.md` § State Transitions and Action Availability, note 9).
+**Commit guard.** Confirm and Publish act only on the last success whose
+`reviewedCommit` equals local `master` HEAD. If it does not match — e.g. a
+merge has moved HEAD past it — the operation refuses with a clear message,
+records nothing, and logs the refusal. The UI disables these actions in
+that case too, but the guard is enforced in the operation itself
+(`workflow.md` § State Transitions and Action Availability, note 9).
 
 ### Relationships
 
@@ -472,20 +646,30 @@ operation itself (`workflow.md` § State Transitions and Action Availability, no
 
 ### Purpose
 
-Represents a built package.
+Represents a built package file.
+
+Code: `artifact.go`.
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
+| --- | --- | --- |
 | id | Artifact identifier | Stored |
-| buildID | Producing build | Relationship — see BuildID |
+| buildID | Producing build | Relationship — `BuildID` |
+| packageName | Owning package | Stored — deliberate denormalization, see below |
 | filename | Package filename | Stored |
 | version | Built version | Stored |
 | architecture | Target architecture | Stored |
-| checksum | Integrity verification | Stored |
+| checksum | Integrity verification; never empty (§ Build → Interruption) | Stored |
 | size | Package size | Stored |
 | published | Publication status | Not a field on Artifact. Stored once per build as `Build.published` on the last-success record — a deliberate trade-off over deriving it from the package repository (#317, deferred). Drift between the flag and the repository is detected by `check`, not prevented; see `workflow.md` § Published: Stored Flag, Its Limits, and Drift Detection |
+
+**`packageName` is a deliberate exception** to "relationships via typed
+IDs": it duplicates what is reachable via `buildID → Build.packageName`.
+It is kept because artifacts are queried directly by package
+(`GetArtifactsByPackage`, e.g. Package Details' artifact history), and
+joining through `BuildStore` for every such lookup isn't worth the purity
+cost. Decided 2026-09-08.
 
 ### Ownership
 
@@ -501,6 +685,15 @@ then its build directory; if any record delete fails, the directory is
 kept (#352). Remove deletes the package's artifact records too. Copies
 already published to the package repository are not affected.
 
+### ArtifactStore
+
+Records are keyed by `ArtifactID`. `GetArtifactsByPackage` and `ListAll`
+can return a partial list **together with** a non-nil error: the error
+names every record that could not be read. Because an unreadable record's
+package is unknown, `GetArtifactsByPackage` reports unreadable records
+from the whole store, not only the requested package. A caller that cannot
+use partial data must treat any error as a failure.
+
 ### Relationships
 
 - produced by one Build
@@ -510,31 +703,19 @@ already published to the package repository are not affected.
 
 ## GitRepository
 
-### Purpose
+**Not modelled, by design.** There is no `GitRepository` struct and no
+store. Everything such an entity would hold is either a fixed convention
+or a one-line derivation:
 
-Represents the Git repository associated with a curated package. It encompasses both the local working repository and its configured remotes (typically origin and upstream), providing the domain identity for repository-related information and long-lived configuration. Transient repository state—such as the working tree status, current branch, commit relationships, and diffs—remains authoritative in Git and is obtained through the Git Provider rather than being persisted in the domain model. As a core abstraction, it is used throughout the import, review, synchronization, and merge workflows.
+- location: `<rootPath>/<name>` — a normal clone, not a bare mirror
+- remotes: `origin` (personal Gitea repository) and `upstream` (AUR)
+- status, commits behind, merge status, diffs, history: live from Git
+  through the Git Provider (`interfaces.md` § Git Provider)
 
-### Attributes
-
-| Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
-| id | Repository identifier | Stored |
-| location | Filesystem path | Stored |
-| origin | Personal Gitea remote (`OriginRemote` in go-domain-structs.md) | Stored |
-| upstream | AUR remote (`UpstreamRemote` in go-domain-structs.md) | Stored |
-| status | Health/status | Derived — no Status field in the Go struct; computed live from Git |
-
-### Ownership
-
-Owns Git repository metadata, not package lifecycle.
-
-### Lifecycle
-
-Configured → Active → Archived
-
-### Relationships
-
-- belongs to one Package
+No consumer needs these bundled as a stored or derived unit. If a real need
+appears, it should be a Git Provider read accessor (derived on call), never
+a persisted struct. `GitRepositoryID` remains in `ids.go` only because
+`Package.GitRepositoryID` references it; both are vestigial (#407).
 
 ---
 
@@ -542,37 +723,35 @@ Configured → Active → Archived
 
 ### Purpose
 
-Represents the local pacman repository that published packages are installed from.
+Represents the local pacman repository that published packages are
+installed from.
+
+Code: `repository.go`.
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
-| id | Repository identifier | Stored |
-| location | Filesystem path | Stored |
-| status | Health/status | Derived — no Status field in the Go struct; computed live |
-| signingStatus | Reserved for future package signing — see roadmap.md Phase 3 | Stored (reserved, unused) |
+| --- | --- | --- |
+| location | Filesystem path | Stored — from `WorkspaceConfig.repositoryPath` |
+| status | Health/status | Derived — computed live by the Publisher; not a field |
+| signingStatus | Reserved for future package signing (roadmap.md) | Stored (reserved, unused) |
+
+The repository database's filename comes from
+`WorkspaceConfig.repoDBName`, not from this entity.
 
 ### Ownership
 
 Owns package repository metadata, not package lifecycle.
 
-### Lifecycle
-
-Configured → Active → Archived
+There is exactly one `PackageRepository` per workspace, built once from
+config at startup. It deliberately has **no `id`**, no store and no
+service interface. (`Workspace.PackageRepositoryID` therefore refers to
+nothing persisted.)
 
 ### Relationships
 
 - belongs to one Workspace
-- stores many Artifacts
-
-### Design Note: `location`'s Source (DOM-007)
-
-`location` is populated at startup from `WorkspaceConfig.RepositoryPath`
-(see § WorkspaceConfig) — there is no separate `PackageRepositoryStore`;
-this entity is constructed from the single config file the same way
-`Workspace` itself is, not independently persisted. Previously
-undocumented; see `domain-package-review.md` DOM-007.
+- stores the published Artifacts
 
 ---
 
@@ -580,40 +759,47 @@ undocumented; see `domain-package-review.md` DOM-007.
 
 ### Purpose
 
-Stores the user's overrides to the default category → severity mapping defined in `risk-analysis.md`. The default mapping itself is not persisted here — it's versioned with the application, not user data — only deviations from it are irreducible state.
+Holds the user's overrides to the default category → severity mapping
+defined in `risk-analysis.md`. The default mapping itself is not stored
+here — it is versioned with the application, not user data — only
+deviations from it are irreducible state.
+
+Named `PolicyConfig`, not `PolicyEngine`, to avoid colliding with the
+Policy Engine service (`interfaces.md`) that applies it: this struct is the
+engine's configuration, not the engine.
+
+Code: `policy_config.go`.
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
+| --- | --- | --- |
 | id | Identifier | Stored |
-| overrides | Category → severity override map | Stored |
+| workspaceID | Owning workspace | Stored — set only by test fixtures; see note below |
+| overrides | Category → severity override map (opaque JSON) | Stored |
 | version | Config version, referenced by RiskAssessment.policyVersion | Stored |
 | updatedAt | Last modification time | Stored |
 
+### Current state
+
+`PolicyConfig` is **not persisted or loaded yet**: there is no store and
+no config key for it, and the application passes an empty `PolicyConfig`
+to Policy Engine at startup, so only the default mapping applies. It is
+passed as a constructor argument, the same pattern as `WorkspaceConfig`.
+
 ### Ownership
 
-Owned by a Workspace. Consumed by Policy Engine when classifying Findings — see `interfaces.md`.
-
-### Lifecycle
-
-Configured → Updated
+Owned by a Workspace. Consumed by Policy Engine when classifying Findings.
 
 ### Relationships
 
 - belongs to one Workspace
 
-> **Note on `WorkspaceID`:** `PolicyConfig` carries an explicit
-> `WorkspaceID` (see `go-domain-structs.md`), which in retrospect assumes
-> multi-workspace support the application has never actually needed —
-> aur-curator manages exactly one workspace. This wasn't a deliberate
-> design choice so much as an unexamined default, and it's called out
-> here rather than quietly left as precedent: `WorkspaceConfig` below is
-> introduced *without* an equivalent ID/back-reference, and that
-> asymmetry is intentional, not an oversight. Whether `PolicyConfig.WorkspaceID`
-> itself should eventually be dropped is a separate, not-yet-decided
-> question — left for whenever `PolicyConfig` is next touched, rather
-> than folded into this change.
+> **Note on `workspaceID`:** it assumes multi-workspace support the
+> application has never needed — aur-curator manages exactly one
+> workspace. This was an unexamined default, not a design choice.
+> `WorkspaceConfig` deliberately has no equivalent field. Whether to drop
+> `workspaceID` is undecided (§ Open Questions).
 
 ---
 
@@ -621,98 +807,87 @@ Configured → Updated
 
 ### Purpose
 
-Bootstraps the application's workspace-scoped settings — workspace
-location, builder backend selection, analyzer configuration, UI
-preferences, and Gitea connection details (see `interfaces.md`,
-`prd.md` § Configuration). Loaded once at startup and passed into
-`Workspace`'s constructor, the same way `PolicyConfig` is passed into
-Policy Engine's constructor — there is no service interface standing
-between the config file and its consumer (see Design Note below).
+The application's workspace-scoped settings: workspace and repository
+locations, Gitea connection details, automation switches, and log
+location. Loaded once at startup and held for the process lifetime.
+
+Code: `workspace.go`; loading in `internal/config`.
 
 ### Attributes
 
-| Attribute | Purpose | Kind | Required |
-| ----------- | --------- | --------- | --------- |
-| rootPath | Workspace root — one subdirectory per curated package | Stored | **Mandatory** — `config.Load` errors if absent/empty |
-| repositoryPath | Local pacman repository path — source of `PackageRepository.location` | Stored | **Mandatory** — `config.Load` errors if absent/empty |
-| builderBackend | Selected Builder implementation (e.g. `makepkg`) | Stored | Optional — defaults to `"makepkg"` |
-| analyzerConfig | Opaque analyzer settings, shape owned by Analyzer Manager, not yet designed (Sprint 5) | Stored | Optional placeholder — absence is valid, not an error |
-| uiPreferences | Opaque UI preferences, shape owned by the UI layer, not yet designed (Sprint 6+) | Stored | Optional placeholder — absence is valid, not an error |
-| giteaBaseURL | Gitea instance base URL, used by Import | Stored | **Mandatory** — `config.Load` errors if absent/empty |
-| giteaOrg | Gitea organization managed packages are registered under | Stored | **Mandatory** — `config.Load` errors if absent/empty |
-| giteaToken | Gitea API token, used by Import | Stored | **Mandatory, precedence-aware** — `config.Load` errors only if both `AUR_CURATOR_GITEA_TOKEN` and this key are absent; see § Secret Handling |
+| Key | Purpose | Required |
+| --- | --- | --- |
+| rootPath | Workspace root — one subdirectory per curated package | **Mandatory** |
+| repositoryPath | Local pacman repository path — source of `PackageRepository.location` | **Mandatory** |
+| repoDBName | Filename of the repository database archive inside `repositoryPath`, used by `repo-add`; the part before `.db` is the repository name in `pacman.conf` | Optional — defaults to `custom.db.tar.gz` |
+| giteaBaseURL | Gitea instance base URL | **Mandatory** |
+| giteaOrg | Gitea organization curated packages live under | **Mandatory** |
+| giteaToken | Gitea API token | **Mandatory, precedence-aware** — see § Secret Handling |
+| autoMerge | Merge automatically after a successful Approve, with no prompt; otherwise the review stays Approved until the user merges | Optional — defaults to false |
+| autoAnalyzeAfterImport | Run analyzers automatically after a successful Import (Import's clone already establishes `upstream/master`, so no Fetch is needed). A failed auto-analyze is reported but does not undo Import | Optional — defaults to false |
+| activityLogPath | The always-on, append-only activity log | Optional — defaults to `<rootPath>/.aur-curator/activity.log` |
+| builderBackend | Builder implementation | Optional — defaults to `makepkg`; **currently ignored**, `makepkg` is always used (#408) |
+| analyzerConfig | Opaque analyzer settings, shape not yet designed | Optional placeholder — **currently ignored** (#408) |
+| uiPreferences | Opaque UI preferences, shape not yet designed | Optional placeholder — **currently ignored** (#408) |
 
-`rootPath` and `repositoryPath` were previously undocumented here —
-`rootPath` lived as a `Workspace` field despite this section's own
-Purpose text already describing WorkspaceConfig as bootstrapping
-"workspace location," and `repositoryPath` had no home anywhere in the
-domain model. Both resolved as part of the same freeze; full
-mandatory/optional rationale and `config.Load` behavior spec in
-`docs/domain/workspace-config-spec.md`. See `domain-package-review.md`
-DOM-003, DOM-006, DOM-007.
+The activity log (one human-readable line per lifecycle event — import,
+approve, reject, merge, build, confirm, publish — success and failure
+alike) is distinct from the error log (`internal/errorlog`: always on,
+failures only, machine-parseable) and the trace (`internal/trace`: opt-in
+developer diagnostics).
 
-**Resolved (2026-08-09):** `giteaBaseURL`/`giteaOrg`/`giteaToken` are
-mandatory — `config.Load` errors if `giteaBaseURL` or `giteaOrg` is
-absent, and errors on `giteaToken` only if neither the
-`AUR_CURATOR_GITEA_TOKEN` environment variable nor the file key supplies
-a value (precedence-aware mandatory, not "the file key must be set" —
-see § Secret Handling and `go-domain-structs.md`'s `WorkspaceConfig`
-comment for the distinction). See `domain-package-review.md` DOM-015.
+### Loading
+
+`config.Load(path)` is a plain function returning a `WorkspaceConfig`; it
+errors if a mandatory key is missing or empty and applies the defaults
+above. There is no `ConfigurationProvider` interface: there is exactly one
+config source, and an interface would add indirection with no second
+implementation to justify it. `WorkspaceConfig` is passed as a constructor
+argument, and `main` hands each dependency only the fields it needs
+(`developer-guide.md`). Nothing re-reads the file while the application
+runs — the Dashboard's `R` Refresh reloads package data, not config — so
+a config change takes effect at the next start.
+
+The config file is JSON with comments, decoded **directly into
+`WorkspaceConfig` via its `json` tags** — there is no intermediate struct
+to keep in sync. The tags are load-bearing: a field without one is never
+loaded. A new field needs only a tag;
+`TestLoad392_EveryFieldLoads` in `internal/config` fails if a field has no
+tag or no fixture entry. (#392: `autoMerge`, and earlier
+`autoAnalyzeAfterImport` (#146), were silently never loaded because a
+separate hand-copied file struct lacked them.) Unknown keys in the file
+are currently ignored; whether to reject them is open (#408).
+
+### Secret Handling: GiteaToken
+
+1. **Precedence:** `AUR_CURATOR_GITEA_TOKEN`, if set, overrides the file's
+   `giteaToken` key outright — a user who wants no secret on disk never
+   sets the key at all. `config.Load` checks the env var first, and errors
+   only if **both** sources are absent. (`giteaBaseURL` and `giteaOrg`
+   have no alternate source and are checked against the file alone.)
+2. **File permissions:** if the token comes from the file, `config.Load`
+   warns — it does not refuse to start — if the file is group- or
+   world-readable: highlight rather than block, as with other
+   lower-certainty risk signals (`risk-analysis.md`).
+3. **Type:** `giteaToken` is a `Secret`, not a `string`. `String()` and
+   `GoString()` return `REDACTED`, so an accidental `%v`/`%+v` of
+   `WorkspaceConfig` (including inside a wrapped error) cannot leak it.
+   `MarshalJSON` is redacted too, because `encoding/json` ignores
+   `String()`. There is deliberately no `UnmarshalJSON`: decoding a JSON
+   string into `Secret` works natively, which is how `config.Load` reads
+   the key. Deliberate access is always through `Value()`.
+4. **No re-persistence:** the resolved value is never cached or written
+   anywhere else.
 
 ### Ownership
 
 Owned by `Workspace` as a plain embedded value — not a separately
-identified, independently stored entity. Unlike `PolicyConfig`, it has
-no `ID` and no back-reference; see the note under PolicyConfig above.
-
-### Lifecycle
-
-Loaded at startup → held for the process lifetime → re-loaded and
-swapped in whole on an explicit Reload action (no partial/field-level
-update).
+identified, independently stored entity. It has no `id` and no
+back-reference to `Workspace`.
 
 ### Relationships
 
-- belongs to one Workspace (embedded, not referenced by ID)
-
-### Design Note: No Configuration Provider Interface
-
-An earlier draft of this design introduced a `ConfigurationProvider`
-service interface (see `interfaces.md`'s prior revision). That interface
-is removed: there is exactly one config source (a YAML file on disk),
-nothing else has ever needed to implement an alternative, and introducing
-the interface added a layer of indirection without a second consumer to
-justify it — the same YAGNI reasoning already applied to removing
-`History()` from `GitProvider` (see `go-domain-structs.md`). Loading is a
-plain function (`config.Load(path string) (WorkspaceConfig, error)`),
-mirroring how `PolicyConfig` has no corresponding "Policy Config
-Provider" — it's simply passed as a constructor argument.
-
-### Secret Handling: GiteaToken
-
-Resolved (previously flagged as open):
-
-1. **Precedence:** `AUR_CURATOR_GITEA_TOKEN`, if set, overrides the
-   YAML file's `giteaToken` key outright — a user who wants no secret on
-   disk never needs to set the YAML key at all. `config.Load` checks the
-   env var first.
-
-2. **File permissions:** if the token is sourced from the YAML file (not
-   the env var), `config.Load` stats the file and warns — toast/log, not
-   a refusal to start — if it's group- or world-readable. This is a soft
-   guard rail ("highlight rather than block"), consistent with how
-   `risk-analysis.md` and the Review screen's Approve-without-analysis
-   modal already treat lower-certainty risk signals in this application.
-
-3. **Type:** `GiteaToken` is `Secret`, not `string` (see
-   `go-domain-structs.md`) — its `String()`/`GoString()` are redacted so
-   an accidental `%+v` of `WorkspaceConfig` (e.g. inside a wrapped error)
-   can't leak it. Deliberate access goes through `Secret.Value()`.
-   Secret also implements MarshalJSON, returning "REDACTED", since 
-   encoding/json does not use String().
-
-4. **No re-persistence.** `Reload` re-resolves from env/file each time;
-   the resolved value is never cached or written back out anywhere else.
+- embedded in one Workspace
 
 ---
 
@@ -720,40 +895,29 @@ Resolved (previously flagged as open):
 
 ### Purpose
 
-Represents the user's managed aur-curator environment.
+Represents the user's managed aur-curator environment. Root aggregate for
+the curated collection.
+
+The `Workspace` struct in `workspace.go` is unused; the application works
+with `WorkspaceConfig` directly (§ Go Mapping → Concepts Without a Live
+Go Type). The attributes below describe the concept.
 
 ### Attributes
 
 | Attribute | Purpose | Kind |
-| ----------- | --------- | --------- |
-| packageRepository | Configured local pacman repository | Relationship — see PackageRepositoryID |
-| policyConfig | User's severity override configuration | Relationship — see PolicyConfigID |
-| config | Workspace-scoped bootstrap settings | Relationship — embedded WorkspaceConfig, see § WorkspaceConfig |
+| --- | --- | --- |
+| id | Identifier | Stored |
+| packageRepository | Local pacman repository | Relationship — `PackageRepositoryID`; refers to nothing persisted (§ PackageRepository) |
+| policyConfig | Severity override configuration | Relationship — `PolicyConfigID`; refers to nothing persisted (§ PolicyConfig) |
+| config | Workspace-scoped settings | Embedded `WorkspaceConfig`, by value |
 
-`rootPath` moved to `WorkspaceConfig` (DOM-003) — `Workspace` still
-answers "where do my files live" via `workspace.Config.RootPath` since
-`WorkspaceConfig` is embedded by value, not by reference.
+The workspace root is `config.rootPath`, not a field of its own.
 
-`packages` (previously `Relationship — see PackageIDs`) has been
-removed (DOM-004). The curated package list is always derivable from the
-filesystem — including immediately after Import, since Import's clone
-step (`workflow.md` § Import Mechanics, step 2) puts the package's
-directory on disk. `Workspace` does not duplicate what Package Catalog
-already discovers with a live filesystem scan on every call
-(`interfaces.md` § Package Catalog). "Contains many Packages" below is
-still a true relationship conceptually — it's just not a stored one.
-
-(This table's separator row previously had only two dash-columns against
-three header columns — corrected as part of this edit, unrelated to
-DOM-001–007.)
-
-### Ownership
-
-Root aggregate for the managed collection.
-
-### Lifecycle
-
-Configured → Active
+There is **no package list**. The curated set is always derived from the
+filesystem by Package Catalog's live scan (`interfaces.md` § Package
+Catalog) — including immediately after Import, since Import's clone puts
+the package's directory on disk (`workflow.md` § Import). "Contains many
+Packages" is a true relationship, just not a stored one.
 
 ### Relationships
 
@@ -768,32 +932,31 @@ Configured → Active
 
 ```text
 Workspace
- ├── Packages
- │     ├── GitRepository
- │     ├── Review (current only — see Review § Current, Not Historical)
+ ├── Packages (discovered from the filesystem, not stored)
+ │     ├── git clone: origin + upstream (not modelled — Git owns it)
+ │     ├── Review (current only)
  │     │      ├── Findings
  │     │      └── RiskAssessment
  │     └── Builds (latest attempt + last success)
- │            └── Artifacts
+ │            └── Artifacts (last success only)
  ├── PackageRepository
  │     └── Published Artifacts
  ├── PolicyConfig
  └── WorkspaceConfig (embedded, not a separate store)
 ```
 
-### Open Questions
+---
 
-- ~~Should Git Repository and Package Repository become separate entities?~~ **Resolved:** Yes — split into GitRepository and PackageRepository.
-- ~~Should Decision remain embedded within Review?~~ **Resolved:** Yes — Decision is not a separate entity. `Review.status`, `Review.decisionTime`, and `Review.rationale` carry the trust decision directly.
-- ~~Is Review historical (many per package) or current-state (one per package)?~~ **Resolved:** Current-state only. See Review § "Review Scope: Current, Not Historical."
-- Should Artifact distinguish build output from published packages?
-- ~~Is lifecycle state derived or persisted?~~ **Resolved:** Derived — from the review and the last successful build of local HEAD. See § Package → Lifecycle.
-- ~~Should Build reference the exact reviewed commit for reproducibility?~~ **Resolved:** Yes — `Build.ReviewedCommit` (see § Build attributes).
-- ~~Is Finding.severity derived or persisted?~~ **Resolved:** Derived, via Policy Engine.
-- ~~Is Review.status derived or persisted?~~ **Resolved:** Persisted directly
-  on Review. (Previously derived from a separate Decision entity's presence;
-  no longer applicable now that Decision is embedded in Review — see above.)
-- Should RiskAssessment support re-computation (e.g. a "what would this look like under current policy" view), or does its audit-snapshot nature mean it's strictly write-once?
-- Does PolicyConfig need its own version history, or is `updatedAt` sufficient given RiskAssessment already freezes `policyVersion` at the point of use?
-- ~~Should Configuration Provider be a service interface, or a plain load function?~~ **Resolved:** Plain function. `WorkspaceConfig` is loaded once at startup and passed as a constructor argument, matching `PolicyConfig`'s relationship to Policy Engine — no interface, no `ConfigurationProvider`, no mockable seam, since there's exactly one config source. See § WorkspaceConfig, Design Note.
-- Should `PolicyConfig.WorkspaceID` be dropped now that `WorkspaceConfig` establishes the precedent of not carrying one? **Not decided** — flagged under § PolicyConfig rather than resolved as part of this change; `PolicyConfig`'s multi-workspace-shaped `WorkspaceID` is left alone until it's next touched directly.
+## Open Questions
+
+- Should Artifact distinguish build output from published packages
+  (related: deriving `published` from the repository, #317)?
+- Should RiskAssessment support re-computation (e.g. a "what would this
+  look like under current policy" view), or does its audit-snapshot nature
+  make it strictly write-once?
+- Does PolicyConfig need its own version history, or is `updatedAt`
+  sufficient given RiskAssessment already freezes `policyVersion` at the
+  point of use?
+- Should `PolicyConfig.workspaceID` be dropped, following
+  `WorkspaceConfig`'s precedent? Left until PolicyConfig is next touched
+  (e.g. when it is first persisted).

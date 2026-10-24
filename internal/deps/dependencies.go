@@ -30,7 +30,7 @@ type Dependencies struct {
 	RepoStore   interface{} // RepositoryStore placeholder (WP2)
 	ReviewDB    domain.ReviewStore
 	BuildDB     domain.BuildStore
-	ArtifactDB  store.ArtifactStore
+	ArtifactDB  domain.ArtifactStore
 	BuildEngine *build.Engine
 	Config      domain.WorkspaceConfig
 	AUR         *aurinfo.Client
@@ -49,7 +49,7 @@ func NewDependencies(
 	reviewStore := jsonstore.NewReviewStore(paths)
 	buildStore := jsonstore.NewBuildStore(paths)
 	artStore := jsonstore.NewArtifactStore(paths)
-	analyzers := analyzer.New(nil)
+	analyzers := analyzer.New()
 	policyEngine := policy.NewEngine(domain.PolicyConfig{})
 	reviewEngine := review.NewEngine(provider, reviewStore, analyzers, policyEngine)
 

@@ -352,7 +352,7 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, queueCmd
 	case msgs.AnalyzeRequestedMsg:
 		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpAnalyze, Pkg: msg.Pkg, TraceCtx: ctx, Cancel: cancel})
+		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpAnalyze, Pkg: msg.Pkg, ReviewID: msg.ReviewID, TraceCtx: ctx, Cancel: cancel})
 		if !ok {
 			return a.setToast("Already queued: " + string(msg.Pkg))
 		}
@@ -830,12 +830,14 @@ func (a App) executeOperation(op Operation) tea.Cmd {
 			if review.Status != domain.ReviewApproved {
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("build: review status is %s, not approved", review.Status), TraceCtx: ctx}
 			}
-			commitsBehind, err := a.deps.Git.CommitsBehind(ctx, op.Pkg)
+			// Build needs the reviewed commit in master — not upstream's
+			// tip, which may have moved on since the review (#406).
+			merged, err := a.deps.Git.IsMerged(ctx, op.Pkg, review.UpstreamCommit)
 			if err != nil {
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("build: failed to check merge state for %s: %w", op.Pkg, err), TraceCtx: ctx}
 			}
-			if commitsBehind > 0 {
-				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("build: %s not yet merged (commits behind: %d)", op.Pkg, commitsBehind), TraceCtx: ctx}
+			if !merged {
+				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("build: %s not yet merged (reviewed commit %s is not in master)", op.Pkg, shortSHA(review.UpstreamCommit)), TraceCtx: ctx}
 			}
 			// Recorded in the activity log: the UI asked for confirmation if
 			// there were local commits not on upstream (workflow.md § Local
@@ -905,36 +907,30 @@ func (a App) executeOperation(op Operation) tea.Cmd {
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("fetch: git provider not configured"), TraceCtx: ctx}
 			}
 			ctx := op.TraceCtx
-			res, err := review.FetchAndReview(ctx, a.deps.Git, a.deps.Reviews, op.Pkg, false)
+			res, err := review.FetchAndReview(ctx, a.deps.Git, a.deps.Reviews, op.Pkg)
 			if err != nil {
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: err, TraceCtx: ctx}
 			}
-			if res.EmptyResult {
+			switch {
+			case res.EmptyResult:
 				return msgs.OperationCompletedMsg{OpID: op.ID, TraceCtx: ctx}
-			}
-			if !res.Changed {
+			case res.ReviewStarted:
+				return msgs.OperationCompletedMsg{OpID: op.ID, Result: fmt.Sprintf("New upstream commit %s — review started", shortSHA(res.ReviewCommit)), TraceCtx: ctx}
+			case res.Changed:
+				return msgs.OperationCompletedMsg{OpID: op.ID, Result: fmt.Sprintf("Upstream changed (refs: %s → %s)", res.Before, res.After), TraceCtx: ctx}
+			default:
 				return msgs.OperationCompletedMsg{OpID: op.ID, Result: "Already up to date — no new upstream commits since last fetch", TraceCtx: ctx}
 			}
-			return msgs.OperationCompletedMsg{OpID: op.ID, Result: fmt.Sprintf("Upstream changed (refs: %s → %s)", res.Before, res.After), TraceCtx: ctx}
 		case OpAnalyze:
-			if a.deps.Git == nil || a.deps.Reviews == nil {
+			if a.deps.Reviews == nil {
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("analyze: dependencies not configured"), TraceCtx: ctx}
 			}
 			ctx := op.TraceCtx
 			gitCtx, gitCancel := git.GitTimeoutCtx(ctx)
 			defer gitCancel()
-			if err := a.deps.Git.Fetch(gitCtx, op.Pkg); err != nil {
-				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: err, TraceCtx: ctx}
-			}
-			review, err := a.deps.Reviews.InitiateReview(gitCtx, op.Pkg)
-			if err != nil {
-				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: err, TraceCtx: ctx}
-			}
-			if review.Status != domain.ReviewPending {
-				trace.Log(gitCtx, "handoff", "to", "store", "from", "reviews", "via", "InitiateReview", "pkg", op.Pkg, "result", "Analyze skipped")
-				return msgs.OperationCompletedMsg{OpID: op.ID, Result: "Analyze skipped — review already decided", TraceCtx: ctx}
-			}
-			analysis, err := a.deps.Reviews.RunAnalyzers(gitCtx, op.Pkg)
+			// Analyze runs on the review the screen showed, never a new
+			// one: no fetch, no InitiateReview (#399).
+			analysis, err := a.deps.Reviews.RunAnalyzers(gitCtx, op.Pkg, op.ReviewID)
 			if err != nil {
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: err, TraceCtx: ctx}
 			}
@@ -1030,4 +1026,14 @@ func (a App) drainQueueCmd() (App, tea.Cmd) {
 	}
 	a.ops.MarkStarted(op)
 	return a, a.executeOperation(op)
+}
+
+// shortSHA returns the first 7 characters of a commit hash, or the whole
+// string if it is shorter. Same rule as screens.shortSHA in
+// review_screen.go; the copies are tracked for consolidation in #407.
+func shortSHA(commit string) string {
+	if len(commit) > 7 {
+		return commit[:7]
+	}
+	return commit
 }

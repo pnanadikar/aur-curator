@@ -9,6 +9,19 @@
 
 This document defines the information architecture of **aur-curator**. It describes **what** the user interface presents and how it maps to the domain model. It deliberately avoids implementation details.
 
+## UI Philosophy
+
+The application should answer three questions immediately:
+
+1. What changed?
+2. Is it safe?
+3. What should I do next?
+
+The review process is always the primary workflow. Each screen leads with
+the question it owns: the Dashboard with *what needs attention / what
+next* (`tui-dashboard-wireframe.md`), Review with *is it safe?*
+(`tui-review.md`).
+
 ## Design Principles
 
 - Dashboard-first workflow.

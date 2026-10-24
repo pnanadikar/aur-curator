@@ -9,10 +9,6 @@ import (
 	"github.com/pramod/aur-curator/internal/git"
 )
 
-type discardLogger struct{}
-
-func (discardLogger) Printf(string, ...any) {}
-
 type fakeAnalyzer struct {
 	name     string
 	findings []domain.Finding
@@ -36,9 +32,12 @@ func (f fakeAnalyzer) Run(
 }
 
 func TestManagerRunEmpty(t *testing.T) {
-	m := newManager(discardLogger{})
+	m := newManager()
 
-	got := m.Run(context.Background(), &git.GitDiff{})
+	got, err := m.Run(context.Background(), &git.GitDiff{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(got) != 0 {
 		t.Fatalf("expected no findings, got %d", len(got))
@@ -46,7 +45,7 @@ func TestManagerRunEmpty(t *testing.T) {
 }
 
 func TestManagerCollectsFindings(t *testing.T) {
-	m := newManager(discardLogger{},
+	m := newManager(
 		fakeAnalyzer{
 			name: "a",
 			findings: []domain.Finding{
@@ -61,7 +60,10 @@ func TestManagerCollectsFindings(t *testing.T) {
 		},
 	)
 
-	got := m.Run(context.Background(), &git.GitDiff{})
+	got, err := m.Run(context.Background(), &git.GitDiff{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(got) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(got))
@@ -76,11 +78,14 @@ func TestManagerCollectsFindings(t *testing.T) {
 	}
 }
 
-func TestManagerContinuesAfterAnalyzerFailure(t *testing.T) {
-	m := newManager(discardLogger{},
+// TestManagerReportsAnalyzerFailures410: a failing analyzer does not stop
+// the others, and every failure is returned — never dropped (#410).
+func TestManagerReportsAnalyzerFailures410(t *testing.T) {
+	boom := errors.New("boom")
+	m := newManager(
 		fakeAnalyzer{
 			name: "broken",
-			err:  errors.New("boom"),
+			err:  boom,
 		},
 		fakeAnalyzer{
 			name: "working",
@@ -88,9 +93,21 @@ func TestManagerContinuesAfterAnalyzerFailure(t *testing.T) {
 				{Category: "checksum_refresh"},
 			},
 		},
+		fakeAnalyzer{
+			name: "also-broken",
+			err:  context.Canceled,
+		},
 	)
 
-	got := m.Run(context.Background(), &git.GitDiff{})
+	got, err := m.Run(context.Background(), &git.GitDiff{})
+
+	want := "analyzer \"broken\" failed: boom\nanalyzer \"also-broken\" failed: context canceled"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v\nwant  %s", err, want)
+	}
+	if !errors.Is(err, boom) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err does not wrap both causes: %v", err)
+	}
 
 	if len(got) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(got))
@@ -102,7 +119,7 @@ func TestManagerContinuesAfterAnalyzerFailure(t *testing.T) {
 }
 
 func TestManagerPreservesAnalyzerOrder(t *testing.T) {
-	m := newManager(discardLogger{},
+	m := newManager(
 		fakeAnalyzer{
 			findings: []domain.Finding{
 				{Category: "version_bump"},
@@ -115,7 +132,10 @@ func TestManagerPreservesAnalyzerOrder(t *testing.T) {
 		},
 	)
 
-	got := m.Run(context.Background(), &git.GitDiff{})
+	got, err := m.Run(context.Background(), &git.GitDiff{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if got[0].Category != "version_bump" {
 		t.Fatal("order changed")

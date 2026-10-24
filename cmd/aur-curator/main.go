@@ -78,7 +78,7 @@ func main() {
 	}
 
 	pkgCatalog := catalog.NewFilesystemCatalog(cfg.RootPath)
-	forge := git.NewGiteaForge(cfg.GiteaBaseURL, cfg.GiteaOrg, cfg.GiteaToken.Value())
+	forge := git.NewGiteaForge(cfg.GiteaBaseURL, cfg.GiteaOrg, cfg.GiteaToken.Value(), config.GiteaTokenSource(configPath))
 	provider := git.New(pkgCatalog, git.ExecRunner{}, forge, cfg.RootPath)
 
 	switch {
@@ -221,21 +221,27 @@ func runImport(
 
 	if err := provider.Import(ctx, domain.PackageName(name)); err != nil {
 		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "import", name, "status", "failed", "error", err.Error())
-		fmt.Fprintf(os.Stderr, "import: %v\n", err)
+		// Import's errors already start with `import "<pkg>":` (#401).
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	d := deps.NewDependencies(cfg, provider, pkgCatalog)
 
-	if _, err := d.Reviews.EnsureReview(ctx, domain.PackageName(name)); err != nil {
-		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "import", name, "status", "failed", "error", err.Error())
-		fmt.Fprintf(os.Stderr, "import: review creation failed: %v\n", err)
+	rv, err := d.Reviews.EnsureReview(ctx, domain.PackageName(name))
+	if err != nil {
+		// The package is imported; only its first review is missing, and
+		// the Dashboard creates it (EnsureReview) the next time it loads
+		// the package. Nothing needs cleaning up (#401).
+		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "import", name, "status", "success", "review", "failed", "error", err.Error())
+		_ = errorlog.Log(ctx, cfg.RootPath, "import", fmt.Sprintf("import %q succeeded but creating its review failed: %v", name, err))
+		fmt.Fprintf(os.Stderr, "Imported %q, but creating its review failed: %v\nThe review is created the next time aur-curator opens the package; nothing needs cleaning up.\n", name, err)
 		os.Exit(1)
 	}
 
 	autoAnalyzeMsg := ""
 	if cfg.AutoAnalyzeAfterImport {
-		if analysis, err := d.Reviews.RunAnalyzers(ctx, domain.PackageName(name)); err != nil {
+		if analysis, err := d.Reviews.RunAnalyzers(ctx, domain.PackageName(name), rv.ID); err != nil {
 			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "import", name, "status", "success", "auto_analyze", "failed", "error", err.Error())
 			autoAnalyzeMsg = fmt.Sprintf(" Analysis failed: %v.", err)
 		} else {
@@ -899,11 +905,11 @@ func runUpdate(
 		if err != nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y") {
 			continue
 		}
-		if _, err := review.FetchAndReview(ctx, provider, d.Reviews, pkg, true); err != nil {
+		if res, err := review.FetchAndReview(ctx, provider, d.Reviews, pkg); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: fetch failed: %v\n", pkg, err)
 			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(pkg), "fetch", "failed", "error", err.Error())
 		} else {
-			fmt.Printf("%s: fetch complete, review refreshed.\n", pkg)
+			printUpdateFetch(pkg, res)
 			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(pkg), "fetch", "success")
 		}
 	}
@@ -941,11 +947,11 @@ func runUpdate(
 			// All remaining — process all from start
 			startIdx = 0
 			for _, c := range bucket3Candidates[startIdx:] {
-				if _, err := review.FetchAndReview(ctx, provider, nil, c.pkg, false); err != nil {
+				if res, err := review.FetchAndReview(ctx, provider, d.Reviews, c.pkg); err != nil {
 					fmt.Fprintf(os.Stderr, "%s: fetch failed: %v\n", c.pkg, err)
 					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "failed", "error", err.Error())
 				} else {
-					fmt.Printf("%s: fetch complete.\n", c.pkg)
+					printUpdateFetch(c.pkg, res)
 					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "success")
 				}
 			}
@@ -959,11 +965,11 @@ func runUpdate(
 					fmt.Printf("%s: skipped.\n", c.pkg)
 					continue
 				}
-				if _, err := review.FetchAndReview(ctx, provider, nil, c.pkg, false); err != nil {
+				if res, err := review.FetchAndReview(ctx, provider, d.Reviews, c.pkg); err != nil {
 					fmt.Fprintf(os.Stderr, "%s: fetch failed: %v\n", c.pkg, err)
 					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "failed", "error", err.Error())
 				} else {
-					fmt.Printf("%s: fetch complete.\n", c.pkg)
+					printUpdateFetch(c.pkg, res)
 					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "success")
 				}
 			}
@@ -971,6 +977,23 @@ func runUpdate(
 	}
 
 	fmt.Println("Update complete.")
+}
+
+// printUpdateFetch reports the outcome of one update fetch: whether a new
+// review was started for the package (#405).
+func printUpdateFetch(pkg domain.PackageName, res review.FetchResult) {
+	switch {
+	case res.EmptyResult:
+		fmt.Printf("%s: fetch complete — could not read the upstream commit; no review step ran.\n", pkg)
+	case res.ReviewStarted:
+		c := res.ReviewCommit
+		if len(c) > 7 {
+			c = c[:7]
+		}
+		fmt.Printf("%s: fetch complete — review started for %s.\n", pkg, c)
+	default:
+		fmt.Printf("%s: fetch complete — no new upstream commit.\n", pkg)
+	}
 }
 
 // parseLocalMasterVersion reads the PKGBUILD for a package from local master

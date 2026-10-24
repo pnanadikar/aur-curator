@@ -84,9 +84,8 @@ pattern-matching read is most likely to miss.
 ## 3. Domain conformance
 
 - For every stored field written in code, find its definition in
-  `domain.md` and `go-domain-structs.md` and check the description
-  matches how the code populates it — not just that the field exists with
-  the right type.
+  `domain.md` and check the description matches how the code populates 
+  it — not just that the field exists with the right type.
 - Specifically check: is the field ever left at a default/zero value in a
   situation the domain doc implies it should be populated (or vice
   versa)? `rationale`/`reviewerNotes` in this codebase is a live example —

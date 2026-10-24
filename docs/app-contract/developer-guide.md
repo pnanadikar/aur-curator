@@ -1,154 +1,307 @@
 # Developer Guide: aur-curator
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-23
 > Status: Active
-> Companion docs: architecture.md, interfaces.md, go-domain-structs.md
+> Companion docs: `architecture.md`, `interfaces.md`, `domain.md`,
+> `workflow.md`, `ui-overview.md`; repository root `DEVELOPMENT.md`
 >
-> Implementation-facing documentation. Where `architecture.md` and `interfaces.md`
-> describe contracts and principles, this document describes how those contracts
-> are wired together in the Bubble Tea application.
+> How the application is put together: the composition root, the Bubble Tea
+> application, persistence, the operations queue, and the implementation
+> rules that came from real defects. `architecture.md` and `interfaces.md`
+> state the principles and contracts; `DEVELOPMENT.md` has the code layout,
+> make targets and workflow.
 >
-> For bounded implementation tasks (e.g. "build the Review screen"), see the
-> relevant file under `screen-packets/` or `interface-packets/` — those are
-> self-contained and generated from this doc plus the domain contract.
+> This guide describes structure and rules and points at the code. It does
+> not copy struct definitions: the code is authoritative, and copied
+> listings were what made earlier versions of this guide go stale.
 
 ---
 
-1. [Application Structure](#application-structure)
-2. [Dependency Injection](#dependency-injection)
-3. [Review Store](#review-store)
-4. [Views](#views)
-5. [Msgs](#msgs)
-6. [Operations Queue](#operations-queue)
-7. [Implementation Conventions & Gotchas](#implementation-conventions--gotchas)
-8. [Action Availability — Single-Source Derivation](#action-availability--single-source-derivation)
-9. [Open Items](#open-items)
+1. [Composition Root](#composition-root)
+2. [Application Structure](#application-structure)
+3. [Screens](#screens)
+4. [Messages](#messages)
+5. [Operations Queue](#operations-queue)
+6. [Lifecycle and Action Availability](#lifecycle-and-action-availability)
+7. [Persistence](#persistence)
+8. [Implementation Conventions & Gotchas](#implementation-conventions--gotchas)
+9. [Known Gaps](#known-gaps)
+
+---
+
+## Composition Root
+
+The application is assembled in two places, and only there:
+
+1. **`cmd/aur-curator/main.go`** loads the configuration, sets up logging,
+   and builds the services every command needs: the Package Catalog, the
+   Gitea forge and the Git provider. It then dispatches to a command.
+2. **`internal/deps.NewDependencies`** builds everything else from the
+   configuration and those two services, and returns them as one
+   `deps.Dependencies` value. Every command that needs more than Git calls
+   it, so the TUI and the CLI commands are wired identically.
+
+No other package constructs a service. Screens, engines and stores receive
+what they use through constructors.
+
+### Startup order
+
+```text
+config.Load(path)                        WorkspaceConfig (plain function, no provider interface)
+  → trace / debug sinks                  --trace, --debug-log, AUR_CURATOR_TRACE, AUR_CURATOR_DEBUG
+  → catalog.NewFilesystemCatalog(root)
+  → git.NewGiteaForge(baseURL, org, token)
+  → git.New(catalog, ExecRunner{}, forge, root)
+  → command:
+       TUI       lock → NewDependencies → recover interrupted builds → ui.NewApp → tea.Program
+       import    lock → provider.Import → NewDependencies → EnsureReview [→ RunAnalyzers]
+       remove    lock → NewDependencies → confirm → forge + stores + files
+       check     lock → NewDependencies → consistency checks
+       update    lock → NewDependencies → AUR check → prompts → FetchAndReview
+```
+
+Every command takes `<rootPath>/.aur-curator/workspace.lock` first: one
+running aur-curator per workspace.
+
+### What `NewDependencies` builds
+
+| Field | Value | Notes |
+| --- | --- | --- |
+| `Git` | the provider from `main.go` | interface `git.Provider` |
+| `Catalog` | the catalog from `main.go` | interface `catalog.PackageCatalog` |
+| `ReviewDB`, `BuildDB`, `ArtifactDB` | JSON stores under `<rootPath>/.aur-curator/` | interfaces declared in `internal/domain` |
+| `Analyzers` | `analyzer.New(nil)` | `analyzerConfig` is not used |
+| `Policy` | `policy.NewEngine(domain.PolicyConfig{})` | no user overrides are loaded yet |
+| `Reviews` | `*review.Engine` | concrete type |
+| `Builder` | `build.MakepkgBuilder{}` | always makepkg; `builderBackend` is not read |
+| `BuildEngine` | `*build.Engine` (builder, build and artifact stores, Git, paths) | concrete type; screens reach the stores through it too |
+| `Repo` | `domain.PackageRepository{Location: repositoryPath}` | |
+| `Publisher` | `publish.NewPublisher(...)` | |
+| `AUR` | `*aurinfo.Client` | AUR RPC version checks |
+| `Config` | the whole `WorkspaceConfig` | read by App and screens (paths, `AutoMerge`) |
+| `RepoStore` | `nil` placeholder | unused |
+
+### Principles
+
+- **Constructor injection.** A constructor returns a fully usable value;
+  no setters after construction.
+- **Consumers define interfaces.** `internal/git` declares `Runner` and
+  `Forge`; the store interfaces live in `internal/domain` beside the
+  structs they persist.
+- **Singleton services, transient records.** Services are built once per
+  process. Reviews, builds, findings and artifacts are created as needed.
+- **No global state** other than the logging sinks (`trace`, `debug`),
+  which are set once in `main.go`.
+- **Adding a subsystem** means constructing it in one of the two places
+  above and passing it to whatever uses it — never constructing it inside
+  another service.
 
 ---
 
 ## Application Structure
 
-The application is a single `tea.Model` (`App`) that owns navigation and
-cross-screen state. Each screen in the nav tree (`ui-overview.md`) is a
-sub-model that only knows how to render its own slice of state. `App` is the
-only model allowed to change which screen is active.
+The TUI is one Bubble Tea model, `ui.App` (`internal/ui/app.go`). It owns
+navigation, the operations queue and the chrome around the screens: toast,
+error line, header, Operations Panel and Status Bar. Each screen is a
+sub-model in `internal/ui/screens` that renders only its own area. **Only
+App changes the active screen; no screen reads or writes another screen's
+state.**
 
-```go
-type Screen int
+### `Update`
 
-const (
-    ScreenDashboard Screen = iota
-    ScreenPackageDetail
-    ScreenRepositoryStatus
-    ScreenSettings
-)
+`App.Update` calls `update`, then `syncScreenSize`, which re-forwards the
+content-area size to every screen whenever it changed. Chrome changes (a
+toast appearing, the panel growing) therefore resize every screen through
+one path. `update` handles messages in this order:
 
-type App struct {
-    screen  Screen
-    history []Screen // back-navigation stack
+1. **Keys App owns.** While the quit-confirm modal is open it gets every
+   key. `Ctrl+C` / `Ctrl+Q` quit (through the same guard as below).
+   `Ctrl+T` cancels the active operation, or, if none is running, drops the
+   pending ones.
+2. **Navigation:** `NavigateMsg`, `BackMsg`, `ReviewDecisionBackMsg`,
+   `QuitRequestedMsg`.
+3. **Toast and error:** `ToastMsg`, the startup notice, toast expiry,
+   `ErrorMsg`.
+4. **Operation results** (`OperationCompleted/Failed/CancelledMsg`): finish
+   the active operation, update its lane, start the next one, show a toast.
+   Not returned early: the message also continues to step 6.
+5. **Operation requests** (`*RequestedMsg`): enqueue and start if idle (see
+   § Operations Queue).
+6. **Delivery to screens:**
+   - operation results go to **every** screen, so each can refresh its
+     derived state whichever screen is active;
+   - `PackagesLoadedMsg`, `ReviewDataMsg` and `AURUpdateMsg` always go to
+     the Dashboard, even when another screen is active (#286);
+   - everything else goes to the active screen only.
 
-    // shared, cross-screen state
-    workspace domain.Workspace
-    packages  []domain.Package
-    ops       OperationsQueue // single global queue — no concurrent builds
+### Navigation
 
-    // one sub-model per screen
-    dashboard  DashboardModel
-    detail     PackageDetailModel
-    repoStatus RepositoryStatusModel
-    settings   SettingsModel
+- `NavigateMsg` pushes the current screen onto `history` and switches.
+  From the Nav Menu (`FromMenu: true`, digit keys) it clears `history`
+  instead: menu jumps are absolute, `Esc` does not walk back through them.
+  Navigating clears the toast and error.
+- `BackMsg` pops `history`. `Changed: true` means the screen being left
+  changed something: Package Details reloads, and the Dashboard reloads that
+  package's row.
+- `ReviewDecisionBackMsg` is the Review screen's Back after Approve/Reject.
+  It carries the saved Review, so the Dashboard updates the row from memory
+  instead of re-reading it.
+- **Quit** always goes through `requestQuit`: it quits at once if no
+  operation is running, otherwise it asks first (#179). Screens emit
+  `QuitRequestedMsg` and never return `tea.Quit` themselves (#300).
+- The Review screen is created on first navigation to a package and reused
+  (with `Refresh`) when the same package is opened again.
 
-    toast Toast
-    err   error
+### `View`
 
-    // dependencies — see "Dependency Injection" below
-    deps Dependencies
-}
-```
-
-`App.Update` routes on `a.screen`, delegating the incoming `tea.Msg` to the
-active sub-model and forwarding any `tea.Cmd` it returns. No sub-model may
-read or write another sub-model's state directly.
+Top to bottom: a reserved toast line, the error line (if any), the header,
+the active screen's body, the Operations Panel and the Status Bar. The body
+is cut to the rows left for it, so a screen that renders too tall can never
+push the header or toast off the top (#329).
 
 ---
 
-## Dependency Injection
+## Screens
 
-`App` is constructed with the architectural interfaces from `interfaces.md`
-injected as plain struct fields — no service locator, no global context.
-Each interface is a narrow contract; the concrete implementation (Git
-provider, makepkg builder, etc.) is chosen at `main.go` and passed down once.
+Screen IDs are `msgs.Screen` (`internal/ui/msgs/msgs.go`):
 
-```go
-type Dependencies struct {
-    Git        git.Provider
-    Catalog    catalog.PackageCatalog // renamed from RepositoryStore — see interfaces.md
-    Reviews    review.Engine
-    Analyzers  analyzer.Manager
-    Policy     policy.Engine
-    Builder    builder.Builder
-    Publisher  publish.Publisher
-    ReviewDB   domain.ReviewStore
-    BuildDB    domain.BuildStore
-}
+```text
+Dashboard ([1])
+ ├── Package Details        tabs: Summary · Commits · Build Log · Artifacts
+ │     └── Review           (Enter; a separate screen, not a tab)
+ ├── Repository Status ([2])
+ ├── Settings ([3])         stub: the menu key does nothing yet
+ └── Help ([4])
 ```
 
-**No `Config`/`ConfigurationProvider` field.** `WorkspaceConfig` is loaded
-once, by a plain function, not injected as a service interface —
-`go-domain-structs.md` § WorkspaceConfig is explicit that there is no
-`ConfigurationProvider`, mirroring how `PolicyConfig` is passed directly
-into Policy Engine's constructor rather than accessed through a service.
-An earlier version of this document had a `Config ConfigurationProvider`
-field here, contradicting that domain-level decision — removed; see
-`domain-package-review.md` DOM-010.
+| Screen | File | Notes |
+| --- | --- | --- |
+| Dashboard | `screens/dashboard.go` | Summary cards filter the package list (`^PgDn`/`^PgUp`), `^O` sorts. Row actions: Fetch, Merge, Build, Confirm, Publish, Refresh. |
+| Package Details | `screens/detail.go` | Tabs switch with `^PgDn`/`^PgUp` (or `^→`/`^←`). Same actions as the Dashboard for one package; `End` on Build Log reloads the log and follows it. |
+| Review | `screens/review_screen.go` and siblings | Diff tabs, Findings, Run Analyzers, Approve/Reject modals (`tui-review.md`). |
+| Repository Status | `screens/repostatus.go` | Read-only view of the local pacman repository. |
+| Help | `screens/help.go` | Renders `internal/help` (shared with `--help`). |
 
-Concretely, `main.go` calls `config.Load` once and passes only the
-specific `WorkspaceConfig` fields each constructor actually needs — not
-the whole config, and not an interface wrapping it — so a given
-dependency can't reach for fields it has no business touching (same
-"avoid knowledge of unrelated subsystems" principle from `interfaces.md`
-§ Design Principles that already applies to the interfaces above):
+The Nav Menu (`1` Packages, `2` Repository, `3` Settings, `4` Help, `q`
+Quit) appears on every screen except Review, which is a focused task that
+ends in a decision and is left with `Esc`. The Build confirmation flow (local commits, dirty tree, rebuild,
+`workflow.md`) is one shared component, `BuildGate`, used by both the
+Dashboard and Package Details.
 
-```go
-func main() {
-    cfg, err := config.Load(configPath) // plain function, WorkspaceConfig
-    if err != nil {
-        // ...
-    }
+---
 
-    deps := Dependencies{
-        Catalog: catalog.New(cfg.RootPath),
-        Git:     git.NewProvider(cfg.RootPath, cfg.GiteaBaseURL, cfg.GiteaOrg, cfg.GiteaToken),
-        Builder: builder.New(cfg.BuilderBackend),
-        // ...remaining dependencies constructed the same way, each
-        // taking only the cfg fields it needs
-    }
+## Messages
 
-    app := NewApp(deps)
-    // ...
-}
+Kept as separate types so `Update` stays a flat switch (see § Distinct
+message semantics get distinct types).
 
-func NewApp(deps Dependencies) App {
-    return App{
-        screen: ScreenDashboard,
-        deps:   deps,
-        // sub-models initialized with references to the same deps struct
-        dashboard: NewDashboardModel(deps),
-        detail:    NewPackageDetailModel(deps),
-    }
-}
+| Category | Types | Where |
+| --- | --- | --- |
+| Navigation | `NavigateMsg` (`To`, `Package`, `FromMenu`), `BackMsg` (`Changed`), `ReviewDecisionBackMsg`, `QuitRequestedMsg` | `internal/ui/msgs` |
+| Operation requests | `FetchRequestedMsg`, `AnalyzeRequestedMsg`, `MergeRequestedMsg`, `BuildRequestedMsg`, `ConfirmRequestedMsg`, `PublishRequestedMsg` — each `{Pkg, TraceCtx}` | `internal/ui/msgs` |
+| Operation results | `OperationCompletedMsg` (`Result`, optional `Review` / `Build`), `OperationFailedMsg` (`Kind`, `Err`), `OperationCancelledMsg` | `internal/ui/msgs` |
+| App-level | `ToastMsg`, `AURUpdateMsg`; `ErrorMsg`, `clearToastMsg`, `startupNoticeMsg` | `msgs`; the last three in `internal/ui` |
+| Screen data | `PackagesLoadedMsg`, `ReviewDataMsg` (routed by App to the Dashboard); `detailLoadedMsg`, `buildLogLoadedMsg`, `artifactLoadedMsg`, `PackageSelectedMsg`, … | `internal/ui/screens`, beside the screen that uses them |
+
+Every request and result carries a `TraceCtx`, so one operation's trace
+lines share an ID from key press to completion.
+
+**Approve and Reject are not operations.** The Review screen calls
+`Reviews.RecordDecision` itself and returns with `ReviewDecisionBackMsg`;
+nothing is queued. With `autoMerge` on, Merge follows a successful Approve
+automatically.
+
+**The Review screen shows what is stored (#399).** Analyze, Approve and
+Reject carry the ID of the review on screen, and the Review Engine refuses
+them with `*review.ReviewChangedError` when the stored review has another
+ID. The screen never takes a review from an operation's `Result`: after
+any completed or failed operation for its package it reloads review and
+diff through `loadReviewCmd` (without setting `loading`). A reload that
+brings a different review shows a "replaced" toast; a refusal keeps the
+screen open and shows the opFailure banner instead of going back. The
+reload only lands while Review is the active screen — App routes
+`reviewLoadedMsg` to the active screen only — which is enough, because
+opening Review always reloads (`Init`).
+
+---
+
+## Operations Queue
+
+`internal/ui/ops.go`. All work that runs git, makepkg or the publisher
+goes through one strict FIFO with **one active operation at a time**; there
+are no concurrent builds.
+
+| Kind | Panel lane | What `executeOperation` runs (`app.go`) |
+| --- | --- | --- |
+| `OpFetch` | Fetch | `review.FetchAndReview`, under one 60-second timeout (#409): fetch; if the stored review is not for `upstream/master`, start a new Review (#405) |
+| `OpMerge` | Fetch | requires an Approved review; `Git.Merge(review.UpstreamCommit)` |
+| `OpAnalyze` | Analyze | `RunAnalyzers` on the review the screen showed (`Operation.ReviewID`); no fetch, no new review (#399) |
+| `OpBuild` | Build | requires Approved and the reviewed commit merged (`Git.IsMerged`, #406); `BuildEngine.RunBuild` |
+| `OpConfirm` | Publish | requires a successful, unconfirmed last success built from local HEAD; sets `Confirmed` |
+| `OpPublish` | Publish | requires a confirmed last success built from local HEAD; `Publisher.Publish`, sets `Published` |
+
+**One operation per package.** `Operation.ID` is the package name, and
+`Enqueue` refuses an ID already pending or active ("Already queued"), so a
+package can never have two operations queued, of any kind. When a request
+is queued behind others, a toast shows how many are ahead.
+
+### Flow
+
+1. A `*RequestedMsg` reaches `App.update`, which wraps its `TraceCtx` with
+   `context.WithCancel` and calls `ops.Enqueue`.
+2. `drainQueueCmd` dequeues the head **synchronously, on the App value
+   being returned** (see § Value-receiver discipline), marks its lane
+   started, and returns `executeOperation(op)` as a `tea.Cmd`. That Cmd
+   only does I/O; it never touches queue state.
+3. The Cmd returns a Completed, Failed or Cancelled message. App clears the
+   active operation, updates the lane (Failed also writes `errors.log`;
+   Cancelled writes the activity log), then calls `drainQueueCmd` again.
+4. `Ctrl+T` calls the active operation's cancel function; the operation
+   returns `OperationCancelledMsg`. A cancel that no longer matches the
+   active operation is ignored (#335).
+
+### Panel
+
+The Operations Panel shows four fixed lanes (Fetch, Analyze, Build,
+Publish), each with a status (idle, running, completed, failed, cancelled),
+its last package and its last log line. Lane state is a read-side view of
+the one queue: queue depth is computed from `pending` on every read, never
+stored. The Status Bar shows the active operation and the pending count.
+
+---
+
+## Lifecycle and Action Availability
+
+`lifecycle.DeriveState` (`internal/lifecycle`) computes a package's state;
+it is a pure function and the state is never stored. Inputs: review status
+(or no review), whether the reviewed commit is merged
+(`Git.IsMerged`), local HEAD, and the last successful build.
+
+```text
+NotReviewed · ReviewPending · Approved · Merged · Built · Confirmed · Published · Rejected
 ```
 
-Every `tea.Cmd` that talks to Git, Review, Build, or Publisher does so
-through `a.deps.*`, never by constructing a concrete type inline. This keeps
-sub-models independently testable with fake implementations of each
-interface, per the Design Principles in `interfaces.md`.
+The last successful build only counts when its `ReviewedCommit` equals
+local HEAD. After a new merge, an older build no longer makes the package
+Built/Confirmed/Published, and an unknown HEAD counts as "no build".
+
+Which actions are available in which state is defined in **`workflow.md`
+§ Action Availability**, the single source of truth for the rule. Today
+each screen implements its own predicates against that table
+(`isMergeEnabled`, `isDashboardBuildEnabled`, `isConfirmEnabled`, … in
+`dashboard.go` and `detail.go`); a mismatch between them is a bug. Moving
+to one shared derivation that every screen calls is proposed for v2
+(#404).
+
+Invalid actions stay visible and dimmed: with a short reason on Package
+Details (`(requires …)`), without it on the Dashboard
+(`tui-package-details.md` § Action Bar).
 
 ---
 
 ## Persistence
 
-aur-curator persists only what cannot be derived (see `architecture.md`
+aur-curator persists only what cannot be derived (`architecture.md`
 § Store Only Irreducible State): review decisions, build history and
 build artifacts. Diffs, commit history, merge status and lifecycle state
 are always computed live — from Git, or by `lifecycle.DeriveState` from
@@ -161,27 +314,22 @@ There are three store interfaces, each with one JSON implementation:
 | Interface | Declared in | Persists | Implementation |
 | --- | --- | --- | --- |
 | `ReviewStore` | `internal/domain/review.go` | the current `Review` per package (decision, notes, findings, frozen `RiskAssessment`) | `internal/store/json/review_store.go` |
-| `BuildStore` | `internal/domain/build.go` | `Build` records (status, times, log location, reviewed commit, confirmation) | `internal/store/json/build_store.go` |
-| `ArtifactStore` | `internal/store/artifact_store.go` | `Artifact` records (filename, version, architecture, checksum, size) | `internal/store/json/artifact_store.go` |
+| `BuildStore` | `internal/domain/build.go` | `Build` records: the latest attempt and the last success (status, times, log location, reviewed commit, confirmation, publication) | `internal/store/json/build_store.go` |
+| `ArtifactStore` | `internal/domain/artifact.go` | `Artifact` records (filename, version, architecture, checksum, size) | `internal/store/json/artifact_store.go` |
 
 Stores are storage only. They never query Git, never derive or validate
 state, and never compute a review's or package's status: that belongs to
-Review Engine and `internal/lifecycle`. Every store is reached through
-its interface (`Dependencies.ReviewDB`, `Dependencies.BuildDB`, …), so
-screens and engines can be tested with fakes.
+Review Engine and `internal/lifecycle`. Every store is reached through its
+interface, so screens and engines can be tested with fakes.
 
 ### Interface placement
 
-`ReviewStore` and `BuildStore` are declared in `internal/domain`, next to
-the structs they persist (`go-domain-structs.md`). `internal/domain`
-holds no logic, but an interface declaration is not logic, and keeping
-the contract beside its struct means the domain package defines both the
-shape of a record and how it may be stored.
-
-`ArtifactStore` is the exception: it is declared in `internal/store`.
-This is a known inconsistency, not a deliberate second convention; a
-follow-up issue moves it into `internal/domain` beside the other two.
-New store interfaces belong in `internal/domain`.
+All three store interfaces are declared in `internal/domain`, next to the
+structs they persist (`domain.md`). `internal/domain` holds no
+logic, but an interface declaration is not logic, and keeping the contract
+beside its struct means the domain package defines both the shape of a
+record and how it may be stored. `ArtifactStore` was moved there from
+`internal/store` in #394. New store interfaces belong in `internal/domain`.
 
 ### Backend
 
@@ -198,36 +346,37 @@ The only backend is JSON files under a single workspace-level root,
 │   └── artifact.json        ArtifactStore: one Artifact record
 ├── builds/<build-id>/
 │   ├── build.log            build output log
+│   ├── work/                disposable build checkout (see git-command-walkthrough.md)
 │   └── *.pkg.tar.zst        built package files
 ├── activity.log             always-on lifecycle log
 ├── errors.log               always-on failure log
-└── workspace.lock           allows one running aur-curator per workspace
+├── trace.log                when tracing is on
+└── workspace.lock           one running aur-curator per workspace
 ```
 
 Store records are keyed differently: reviews and builds by package name,
-artifacts by artifact ID (found by package through
-`Artifact.PackageName`, see below). Build output directories are keyed by
-build ID; only the directories referenced by a package's latest attempt
-and latest success are kept.
+artifacts by artifact ID (found by package through `Artifact.PackageName`,
+see below). Build output directories are keyed by build ID; only the
+directories referenced by a package's latest attempt and last success are
+kept.
 
-Plain files are simple, human-inspectable and sufficient at the scale
-this project targets (around a dozen packages). The interfaces exist so
-the backend could change (e.g. to SQLite) without touching engines or the
-UI; there is no plan to do so, and only one backend is ever active.
+Plain files are simple, human-inspectable and sufficient at the scale this
+project targets (around a dozen packages). The interfaces exist so the
+backend could change (e.g. to SQLite) without touching engines or the UI;
+there is no plan to do so, and only one backend is ever active.
 
 ### Review: current, not historical
 
 `ReviewStore` holds exactly one Review per package. Fetching a new
 upstream commit replaces the stored Review — Pending or decided — with a
-new Pending one, and the superseded review's notes, findings and
-rationale are not kept (`domain.md` § Review Scope: Current, Not
-Historical). Git history remains the record of what was reviewed and
-merged.
+new Pending one, and the superseded review's notes, findings and rationale
+are not kept (`domain.md` § Review Scope: Current, Not Historical). Git
+history remains the record of what was reviewed and merged.
 
 ### FindingsStatus
 
-Storage must distinguish three findings states, matching the Review
-screen (`tui-review.md` § Tab Bar):
+Storage must distinguish three findings states, matching the Review screen
+(`tui-review.md` § Tab Bar):
 
 | FindingsStatus | Findings | Meaning |
 | --- | --- | --- |
@@ -235,8 +384,8 @@ screen (`tui-review.md` § Tab Bar):
 | `run` | empty slice | Analyzers ran, found nothing |
 | `run` | non-empty slice | Analyzers ran, found N issues |
 
-`not_run` must never be stored the same way as `run` with an empty
-slice: the Approve confirmation flow depends on the difference.
+`not_run` must never be stored the same way as `run` with an empty slice:
+the Approve flow and the Risk column depend on the difference.
 
 ### Artifact's denormalized PackageName
 
@@ -244,427 +393,56 @@ slice: the Approve confirmation flow depends on the difference.
 `Artifact.BuildID → Build.PackageName`. It is kept deliberately, because
 Package Details looks artifacts up by package, and joining through
 `BuildStore` for every lookup is not worth the purity
-(`go-domain-structs.md` § Artifact).
+(`domain.md` § Artifact).
 
 ### Write before signalling
 
-Any operation that writes a store must finish the write before it
-returns the message that reports completion. Screens recompute action
-availability from the stores as soon as that message arrives (§ Action
-Availability — The persistence-ordering invariant).
-
----
-
-## Views
-
-Maps directly to the nav tree in `ui-overview.md`:
-
-```text
-Dashboard
- ├── Package Details
- │     └── Build Log      (tab; not a trust decision, doesn't warrant a
- │                          separate screen)
- ├── Review               (sibling screen to Package Details, not a tab
- │                          within PackageDetailModel — reached via
- │                          NavigateMsg from Package Details' "Open
- │                          Review" action)
- ├── Repository Status
- └── Settings
-``
-**Confirmed:** Build Log is a tab within `PackageDetailModel`, not its own
-`Screen`. Review is not in the same tab group — it's a sibling top-level
-`Screen` (see nav tree above). Build Log has no domain actions, only
-infrastructure actions (Start build, Cancel build), matching its entry in
-`ui-overview.md`.
-**Note on "Decision":** Approve/Reject and the reviewer's rationale are
-entered on the Review screen, not a Package Details tab (see § Application
-Structure — `App.review` is a top-level `screens.ReviewScreen`, not part of
-`PackageDetailModel`). "Decision" is not a domain entity either way —
-`Review.Status`, `Review.DecisionTime`, and `Review.Rationale` carry that
-data directly (see `domain.md` § Review). There is no corresponding
-`Decision` struct in `go-domain-structs.md`.
-
-```go
-type DashboardModel struct {
-    rows   []DashboardRow // derived, rebuilt from packages on load
-    cursor int
-    search string
-    filter Filter
-    sort   SortKey
-}
-
-type DetailTab int
-
-// Diff/.SRCINFO/.install/Patches/Findings tabs are NOT DetailTab values —
-// they belong to ReviewScreen's own tab bar (widgets.TabBar, string-labeled
-// via widgets.Tab{Label: ...}, not a Go const enum), since Review is a
-// separate top-level Screen. DetailTab only covers tabs that actually stay
-// on Package Details.
-const (
-    TabSummary DetailTab = iota
-    TabCommits
-   TabBuildLog
-)
-
-type PackageDetailModel struct {
-    pkg domain.Package
-    tab DetailTab
-
-    // lazily populated per tab so switching tabs doesn't block on I/O
-    // after the first fetch. Review is NOT here — Review is its own
-    // top-level Screen (App.review, msgs.ScreenReview), reached via
-    // NavigateMsg from this screen's "Open Review" action, not rendered
-    // as a PackageDetailModel tab. Confirmed via source,
-    // internal/ui/app.go:39/225/367-373 and
-    // internal/ui/screens/detail.go:60.
-    build *domain.Build
-}
-
-type RepositoryStatusModel struct {
-    repo domain.PackageRepository
-}
-
-type SettingsModel struct {
-    workspace domain.Workspace
-    policy    policy.Engine
-}
-```
-
----
-
-## Msgs
-
-Four categories, kept distinct so `Update` methods stay flat switches
-instead of nested conditionals.
-
-### 1. Navigation
-
-Handled exclusively by `App`; sub-models never navigate themselves.
-
-```go
-type NavigateMsg struct {
-    To      Screen
-    Package domain.PackageName // set when navigating to ScreenPackageDetail
-}
-type BackMsg struct{}
-```
-
-### 2. Data loaded
-
-Results of `tea.Cmd`s that called into the injected interfaces.
-
-```go
-// PackagesLoadedMsg is name-only: PackageCatalog has no way to populate
-// a full domain.Package's GitRepositoryID/CurrentReviewID/LatestBuildID
-// from a directory listing alone. Assembling those, if/when something
-// needs full domain.Package values, is separate, currently-unscoped
-// work — don't fabricate zero-valued IDs to force domain.Package here.
-type PackagesLoadedMsg struct{ Packages []domain.PackageName }
-type ReviewLoadedMsg struct {
-    Pkg    domain.PackageName
-    Review domain.Review
-}
-type DiffLoadedMsg struct {
-    Pkg  domain.PackageName
-    Kind string // "PKGBUILD" | ".SRCINFO" | ".install" | "patch"
-    Diff Diff
-}
-type FindingsLoadedMsg struct {
-    Pkg      domain.PackageName
-    Findings []domain.Finding
-}
-type BuildLoadedMsg struct {
-    Pkg   domain.PackageName
-    Build domain.Build
-}
-type RepoStatusLoadedMsg struct{ Status domain.PackageRepository }
-```
-
-### 3. User-triggered actions
-
-Emitted by sub-models in response to key presses / clicks. `App` turns
-these into queued `Operation`s (see below) rather than executing them
-immediately — this is what enforces "never auto-build after review" at
-the message-routing level rather than relying on view code to check state.
-
-```go
-type FetchRequestedMsg struct{ Pkg domain.PackageName }
-type AnalyzeRequestedMsg struct{ Pkg domain.PackageName }
-type BuildRequestedMsg struct{ Pkg domain.PackageName }
-type PublishRequestedMsg struct{ Pkg domain.PackageName }
-
-// DecisionRequestedMsg captures an Approve/Reject action. There is no
-// domain.DecisionOutcome type — Decision is not a separate entity (see
-// domain.md § Review). Outcome reuses domain.ReviewStatus, restricted to
-// its two terminal values.
-type DecisionRequestedMsg struct {
-    Pkg     domain.PackageName
-    Outcome domain.ReviewStatus // domain.ReviewApproved | domain.ReviewRejected
-    Notes   string
-}
-```
-
-### 4. Operation lifecycle
-
-Drives both the global queue and the Operations Indicator.
-
-```go
-type OperationQueuedMsg struct{ Op Operation }
-type OperationStartedMsg struct{ Op Operation }
-type OperationProgressMsg struct {
-    OpID string
-    Pct  int
-}
-// OperationLogMsg carries a textual log-append event, distinct from
-// OperationProgressMsg's numeric percent — see § Operations Queue
-// § Operations Panel — Lanes for how both route into a single
-// per-lane append-only Log.
-type OperationLogMsg struct {
-    OpID    string
-    Message string
-}
-type OperationCompletedMsg struct {
-    OpID   string
-    Result any // narrowed by Op.Kind at the call site
-}
-type OperationFailedMsg struct {
-    OpID string
-    Err  error
-}
-```
-
-### Error handling
-
-```go
-type ErrorMsg struct{ Err error } // synchronous failures -> modal
-type ToastMsg struct{ Text string }
-```
-
-`OperationFailedMsg` always routes to `ToastMsg`; anything that fails
-synchronously inline (bad config, invalid input) routes to `ErrorMsg`.
-This mirrors the distinction in `ui-overview.md` between synchronous
-domain actions and asynchronous infrastructure actions.
-
----
-
-## Operations Queue
-
-Concurrent builds are not supported in this version, so the queue is a
-strict FIFO that `App` drains one operation at a time. Dequeue happens
-**synchronously inside `Update`** (via `drainQueueCmd`) rather than
-inside a `tea.Cmd` closure — see "Value-receiver discipline on `App`"
-above for why this matters. A `tea.Cmd` must never be the thing that
-mutates queue state, since `Cmd` closures run later, asynchronously,
-over their own captured copies of `App`.
-
-```go
-type OperationKind int
-
-const (
-    OpFetch OperationKind = iota
-    OpAnalyze
-    OpBuild
-    OpPublish
-)
-
-type Operation struct {
-    ID   string
-    Kind OperationKind
-    Pkg  domain.PackageName
-}
-
-type OperationsQueue struct {
-    pending []Operation
-    active  *Operation
-    lanes   map[Lane]*LaneState // lazily initialized per lane, see LaneState below
-}
-```
-
-### Operations Panel — Lanes
-
-The Operations Panel (`tui-dashboard-wireframe.md` § Operations Queue,
-detailed in CMD-056) groups status by four fixed lanes rather than by
-individual `Operation`. `Confirm` is **not** a lane — it is a synchronous
-workflow gate (`DecisionRequestedMsg`-style, not queued), not an
-Operation, and never appears in the panel.
-
-```go
-type Lane string
-
-const (
-    LaneFetch   Lane = "fetch"
-    LaneAnalyze Lane = "analyze"
-    LaneBuild   Lane = "build"
-    LanePublish Lane = "publish"
-)
-
-// Lane maps an OperationKind to the lane it reports status to.
-// There is no Install operation: aur-curator does not install packages
-// (workflow.md § Installation, #351).
-func (k OperationKind) Lane() Lane {
-    switch k {
-    case OpFetch:
-        return LaneFetch
-    case OpAnalyze:
-        return LaneAnalyze
-    case OpBuild:
-        return LaneBuild
-    case OpPublish:
-        return LanePublish
-    }
-    panic("unhandled OperationKind")
-}
-
-type OperationStatus string
-
-const (
-    StatusIdle      OperationStatus = "idle"
-    StatusRunning   OperationStatus = "running"
-    StatusCompleted OperationStatus = "completed"
-    StatusFailed    OperationStatus = "failed"
-)
-
-type LogEntry struct {
-    Timestamp time.Time
-    Message   string
-}
-
-// LaneState is one lane's visible state in the Operations Panel. Only
-// one lane can be StatusRunning at a time — this is a read-side view
-// over the same single-active-Operation FIFO queue, not a second
-// execution model. Log is append-only; entries are never mutated or
-// truncated in place. Percent-progress (OperationProgressMsg) is
-// rendered as a formatted log line (e.g. "35%") rather than a parallel
-// numeric field, so there is one feed per lane, not two shapes to keep
-// in sync.
-type LaneState struct {
-    Lane       Lane
-    Status     OperationStatus
-    QueueDepth int // pending Operations whose Kind maps to this Lane
-    Log        []LogEntry
-}
-```
-
-`OperationsQueue` gains lane-tracking methods, all pointer-receiver
-(consistent with `Enqueue`/`Dequeue`/`Complete` above — see
-"Value-receiver discipline on `App`" for why this is fine for
-`OperationsQueue` itself but not for `App`):
-
-```go
-// MarkStarted transitions op's lane to Running and appends a log entry.
-func (q *OperationsQueue) MarkStarted(op Operation)
-
-// AppendLog appends a log entry to the lane owning op's Kind without
-// changing Status. Used for both OperationLogMsg and OperationProgressMsg.
-func (q *OperationsQueue) AppendLog(op Operation, message string)
-
-// MarkCompleted transitions op's lane to Completed and appends a final
-// log entry.
-func (q *OperationsQueue) MarkCompleted(op Operation, message string)
-
-// MarkFailed transitions op's lane to Failed and appends the error as
-// a log entry.
-func (q *OperationsQueue) MarkFailed(op Operation, err error)
-
-// LaneState returns the current state of a lane. Never nil — a lane
-// not yet touched lazily initializes to StatusIdle with an empty Log.
-func (q *OperationsQueue) LaneState(l Lane) LaneState
-```
-
-`OperationCompletedMsg`/`OperationFailedMsg` still carry only `OpID`
-(no `Kind`) — the handler resolves `Kind`/`Lane` via `a.ops.active`
-(still populated at that point, matches `OpID`) before calling
-`ops.Complete()`, so no change to those message shapes is needed.
-
-One new Msg, added to § Msgs, Operation lifecycle — a log line and a
-percent tick are different events even though both can fire mid-
-operation, so per this doc's own "distinct message semantics get
-distinct types" rule they are separate types, not one type with an
-optional field:
-
-```go
-type OperationLogMsg struct {
-    OpID    string
-    Message string
-}
-```
-
-Flow:
-
-1. A `*RequestedMsg` arrives at `App.Update`.
-2. `App` calls `ops.Enqueue(Operation{…})` (rejecting duplicates by ID);
-   if the enqueue succeeds, `App` immediately calls `drainQueueCmd`.
-3. `drainQueueCmd` checks `ops.IsIdle()`. If not idle, it calls
-   `ops.Dequeue()` (moving the head from `pending` to `active` on the
-   **local** `App` value), then returns the same `App` alongside a
-   `tea.Cmd` that invokes `executeOperation(op)` — the actual I/O.
-4. The `tea.Cmd` resolves to `OperationCompletedMsg` or
-   `OperationFailedMsg`; `App.Update` handles the result by calling
-   `ops.Complete()` (clearing `active`), then calling `drainQueueCmd`
-   again to pull the next pending item. This repeats until idle.
-5. The Operations Indicator (Status Bar) renders `active` plus
-   `len(ops.pending)` — it holds no state of its own, consistent with
-   the derived-state principle in `ui-overview.md`.
-
-```go
-// drainQueueCmd checks whether the queue has pending work and, if so,
-// dequeues it (mutating the returned App value) and returns a Cmd that
-// executes the dequeued operation.
-func (a App) drainQueueCmd() (App, tea.Cmd) {
-    if a.ops.IsIdle() {
-        return a, nil
-    }
-    op, ok := a.ops.Dequeue()
-    if !ok {
-        return a, nil
-    }
-    return a, a.executeOperation(op)
-}
-
-// executeOperation returns a tea.Cmd that runs op using the appropriate
-// injected dependency.
-func (a App) executeOperation(op Operation) tea.Cmd {
-    return func() tea.Msg {
-        switch op.Kind {
-        case OpBuild:
-            if a.deps.Builder != nil {
-                if err := a.deps.Builder.Build(op.Pkg); err != nil {
-                    return OperationFailedMsg{OpID: op.ID, Err: err}
-                }
-                return OperationCompletedMsg{OpID: op.ID}
-            }
-            return OperationFailedMsg{OpID: op.ID, Err: errors.New("builder not configured")}
-        case OpPublish:
-            if a.deps.Publisher != nil {
-                if err := a.deps.Publisher.Publish(op.Pkg); err != nil {
-                    return OperationFailedMsg{OpID: op.ID, Err: err}
-                }
-                return OperationCompletedMsg{OpID: op.ID}
-            }
-            return OperationFailedMsg{OpID: op.ID, Err: errors.New("publisher not configured")}
-        // OpFetch, OpAnalyze follow the same shape
-        }
-        return OperationFailedMsg{OpID: op.ID, Err: errors.New("unknown operation kind")}
-    }
-}
-```
-
-**Key design note:** `drainQueueCmd` returns `(App, tea.Cmd)`, not just
-`tea.Cmd`. The dequeue mutation (`ops.Dequeue()`) happens **synchronously**
-on the local `a` value, which is returned to `App.Update` and persisted
-as the new live model. The returned `tea.Cmd` only does I/O — it never
-touches queue state. This pattern (value-receiver mutation + I/O-only
-closure) is what CMD-030's bug violated, and it is the pattern every
-method on `App` that returns a `tea.Cmd` must follow.
+Any operation that writes a store must finish the write before it returns
+the message that reports completion. Screens re-derive state from the
+stores as soon as that message arrives; a completion message sent before
+the write lands makes them derive from stale records. Confirm and Publish
+(`app.go`) save the last-success record before returning
+`OperationCompletedMsg`; every new operation must do the same.
 
 ---
 
 ## Implementation Conventions & Gotchas
 
-Lessons from real defects found during SN-06/SN-07/SN-08, captured here
-so they don't recur. Each is a **hard rule**, not a style preference —
-each one caused a real, hard-to-diagnose bug that shipped past `go
-test`, `golangci-lint`, and manual review before being caught.
+### Bubble Tea rules
+
+These apply to everything under `internal/ui`, `internal/widgets` and
+`internal/theme`.
+
+- **One model per screen; App routes.** A screen never navigates, quits
+  or reads another screen; it emits a message and App acts on it.
+- **No goroutines in `Update`.** All async work is a `tea.Cmd` returned
+  from `Update`; every call into Git, stores, the builder or the publisher
+  happens inside such a Cmd.
+- **No I/O in `View`.** `View` renders state already loaded by a Cmd and
+  delivered as a message.
+- **`Update` returns new state** rather than mutating shared structures.
+  Queue bookkeeping in App is ordinary state transition, done on the value
+  being returned (next rule).
+- **Styling lives in `internal/theme`; reusable components in
+  `internal/widgets`** (tab bar, action bar with dimmed actions, modals,
+  content pane, nav menu, layout helpers). Prefer a Bubbles component where
+  one exists.
+- **Key bindings use `bubbles/key`.**
+- **`tea.Batch` for independent commands, `tea.Sequence` when order
+  matters** (e.g. a save that must land before navigating away).
+- **Sizes come from App.** Every screen handles `tea.WindowSizeMsg`; App
+  sends each screen the content-area size, not the terminal size, and
+  re-sends it whenever the chrome changes.
+- **Every exported identifier has a GoDoc comment; `gofmt`; table-driven
+  tests** for branchy pure functions (lifecycle derivation, action
+  predicates, findings states, layout arithmetic).
+- **Keep files small.** Split a screen into several files before it grows
+  hard to review; `dashboard.go`, `detail.go` and `app.go` are already past
+  that point (§ Known Gaps).
+
+The rules below each come from a real defect that passed `go test`,
+`golangci-lint` and review and was only caught in a manual run. They are
+hard rules, not style preferences.
 
 ### Value-receiver discipline on `App`
 
@@ -672,324 +450,157 @@ test`, `golangci-lint`, and manual review before being caught.
 expected to affect persisted state must use a value receiver
 (`func (a App) ...`), never a pointer receiver (`func (a *App) ...`).
 
-**Why:** Bubble Tea persists whatever `App` value `Update` returns as
-the new live model. A pointer-receiver method called from inside
-`Update` (`a.someMethod()` implicitly becomes `(&a).someMethod()`)
-operates on the address of `Update`'s local parameter — a *different*
-copy from whatever gets `return`ed as the new model. If that method's
-job is to schedule a `tea.Cmd` closure that mutates state *later* (e.g.
-draining a queue), the mutation lands on an orphaned copy that Bubble
-Tea never sees again.
+**Why:** Bubble Tea persists whatever `App` value `Update` returns as the
+new live model. A pointer-receiver method called from inside `Update`
+operates on the address of `Update`'s local parameter — a *different* copy
+from whatever gets returned as the new model. If that method's job is to
+schedule a `tea.Cmd` closure that mutates state later (e.g. draining a
+queue), the mutation lands on an orphaned copy that Bubble Tea never sees
+again.
 
-This was CMD-030's root cause: `OperationsQueue.Dequeue()` never
-actually removed anything from the live model, because `drainQueueCmd`
-had a pointer receiver. The queue looked idle from the outside but
-silently re-executed the same operation forever. It passed `go test`,
-`golangci-lint`, and code review — it only surfaced during a live
-manual walkthrough, because the bug only manifests across the boundary
-between synchronous `Update` mutation and asynchronous `tea.Cmd`
-execution, which a unit test calling `Update` directly won't naturally
-exercise unless written specifically to check for it.
+This was #50's root cause: `OperationsQueue.Dequeue()` never removed
+anything from the live model, because `drainQueueCmd` had a pointer
+receiver. The queue looked idle from the outside but silently re-executed
+the same operation forever. The bug only shows across the boundary between
+synchronous `Update` mutation and asynchronous `tea.Cmd` execution, which a
+unit test calling `Update` directly won't exercise unless written to.
 
-**Concretely:** if a method needs to both mutate `App` state and return
-a `tea.Cmd`, its signature should be
-`func (a App) foo(...) (App, tea.Cmd)` — mutate the local `a`, return
-it alongside the `Cmd`. Every call site does `a, cmd := a.foo(...)` (or
-`return a.foo(...)` directly) — never `a.foo()` with the returned value
-discarded.
+**Concretely:** a method that both mutates `App` and returns a `tea.Cmd`
+has the signature `func (a App) foo(...) (App, tea.Cmd)` — mutate the local
+`a`, return it alongside the Cmd. Every call site uses the returned value
+(`a, cmd := a.foo(...)` or `return a.foo(...)`), never `a.foo()` with the
+App discarded. `drainQueueCmd`, `setToast` and `syncScreenSize` all follow
+this shape.
 
 ### Distinct message semantics get distinct types
 
-**Rule:** two messages that mean genuinely different things — even if
-they'd naturally share most of their fields — must be two separate Go
-types with two separate `case` arms in `Update`, never one type
-dispatched on a shared discriminator field.
+**Rule:** two messages that mean different things — even if they'd
+naturally share most of their fields — must be two separate Go types with
+two separate `case` arms in `Update`, never one type dispatched on a shared
+discriminator field.
 
-**Why:** merging a "set" signal and a "clear" signal into one type
-(e.g. `ToastMsg{ID int, Text string}`, dispatched by checking whether
-`ID` matches a current generation counter) makes it structurally
-possible for a "set" delivery to be misrouted into the "clear" branch.
-This happened during SN-08: a toast was set synchronously via
-`setToast`, then *also* redundantly delivered through a batched
-`tea.Cmd` emitting `ToastMsg{ID: N, Text: reason}`; that redelivery
-arrived back at `Update`, matched the current toast generation by ID,
-and was treated as a dismiss — clearing the toast in the same cycle it
-was set, before it ever rendered.
+**Why:** merging a "set" signal and a "clear" signal into one type (e.g.
+`ToastMsg{ID int, Text string}`, dispatched by checking whether `ID`
+matches a current generation counter) makes it possible for a "set"
+delivery to be misrouted into the "clear" branch. This happened: a toast
+was set synchronously via `setToast`, then also redundantly delivered
+through a batched Cmd emitting `ToastMsg{ID: N, Text: reason}`; that
+redelivery matched the current generation and was treated as a dismiss —
+clearing the toast before it ever rendered.
 
-The fix: `ToastMsg{Text string}` (no ID — only ever means "show this")
-and a private `clearToastMsg{id int}` (only ever means "clear if this
-generation is still current") are two separate types. Nothing
-constructs a `ToastMsg` from code that already has an `App` value in
-hand to mutate directly — `setToast` is the sole place toast state is
-written, called synchronously wherever needed, never round-tripped
-through a message when a direct call is available.
+**Concretely:** `ToastMsg{Text}` only ever means "show this";
+`clearToastMsg{id}` only ever means "clear if this generation is still
+current". `setToast` is the one place toast state is written, called
+directly wherever an App value is at hand, never round-tripped through a
+message. The same reasoning made `OperationCancelledMsg` its own type
+rather than a flag on `OperationFailedMsg`.
 
-### Modifier-key convention
+### Key bindings
 
-**Rule:** a screen's keybindings use plain letter keys (`f`, `a`, `b`,
-etc.) by default. `Ctrl`-modified keys are reserved *only* for screens
-that have a focused text-input field where a genuine letter collision
-would otherwise occur (e.g. typing "a" into Reviewer Notes on the
-Review screen must not also trigger "Run Analyzers").
+**Rule:** actions use plain letter keys (`f`, `m`, `b`, `c`, `p`, `r`, `a`).
+`Ctrl` combinations are for navigation and App-wide keys (`^PgUp`/`^PgDn`
+tabs and cards, `^O` sort, `^T` cancel, `^C`/`^Q` quit), and for Reject
+(`^X`), so that a rejection is never taken by a stray keypress. While a text input
+has focus (the Approve notes and Reject reason modals), no plain-letter
+binding may fire: the input gets the keys.
 
-**Why:** most screens (Dashboard, Package Details) have no text-entry
-field at all, so there's no collision to guard against — modifying
-every key with `Ctrl` on those screens would just make the UI harder to
-use for no reason. Decided explicitly during SN-06 scoping: `f`/`a` on
-Dashboard use plain keys, unlike the Review screen's `Ctrl+A`, which
-exists specifically because Reviewer Notes is a focused text field on
-that screen (see REV-004).
-
-### Scrollable-content convention
-
-**Rule:** any pane or tab that can hold variable-length or potentially
-multi-page content must render through a `bubbles/viewport` (or an
-equivalent bounded, scrollable widget) — never as a plain string joined
-directly into the screen's section stack. This applies per-tab, not
-per-screen: a screen can have some tabs that are safely fixed-height
-and others that need a viewport, and each is judged on its own content,
-not on whether a sibling tab already has one.
-
-**Why:** CMD-060 was filed as "Review screen chops the top of the
-viewport" and initially fixed only for the Diff-family tabs — the fix
-measured every other section's real rendered height via
-`lipgloss.Height()` and sized `DiffPane`'s viewport accordingly. But the
-Findings tab rendered through a separate function
-(`renderFindingsContent()`) that built a plain `strings.Builder` with no
-viewport and no height bound at all — so the same chopping bug remained
-fully reproducible on Findings, and is *more* likely to occur there in
-practice, since Findings content grows with real analyzer output while
-Diff content is comparatively bounded. The lesson isn't "Diff needed a
-viewport" — it's "any tab holding variable-length content needs one";
-treating that as implicit per-tab rather than a screen-wide rule is what
-let the second instance slip through the first fix.
-
-**Concretely:** a screen with multiple tabs should share one measured
-layout function between sizing and rendering (see next rule) and feed
-*every* tab's content through the same bounded viewport, re-populating
-its content on tab switch rather than giving only some tabs a viewport
-and others a bare string.
-
-### Single source of truth for section layout
-
-**Rule:** a screen's rendered sections (header, summary bars, tab
-content, footer fields, action bar, etc.) must be built by one function
-that both `View()` and any height/size-measurement code call — never
-reconstructed independently in two places, even if the two copies
-currently produce identical output.
-
-**Why:** the CMD-060 fix computed viewport height by measuring a set of
-section strings assembled in a `layoutParts()`-style helper, while
-`View()` assembled its own separately-written copy of the same
-sections. The two agreed by coincidence at fix time. Nothing prevents
-them from silently diverging the next time someone edits the action bar
-text or adds a line to the header in only one of the two places — and
-when they diverge, the viewport is sized against content that isn't
-what's actually rendered, reintroducing exactly the chopping bug this
-rule exists to prevent, with no compiler error to catch it.
-
-**Concretely:** `View()` should call the same section-building function
-the sizing code calls, not maintain a parallel literal construction of
-the same strings.
+**Why:** the Review screen once had an always-focused Reviewer Notes field,
+so typing a note could trigger actions (`x` rejected, #41), which led to
+`Ctrl`-modified action keys on that screen only. Since #22 moved notes into
+the Approve modal, Review uses plain letters like every other screen.
 
 ### Tab/Shift+Tab reserved for focus, not content-switching
 
-**Rule:** `Tab`/`Shift+Tab` are reserved exclusively for moving focus
-between focusable elements on a screen (fields, scrollable panes,
-buttons). They must never be repurposed to switch between tabs/views
-within a screen — use a distinct binding for that (e.g. `Ctrl+PgUp`/
-`Ctrl+PgDn`, with help text surfaced in the action bar).
+**Rule:** `Tab`/`Shift+Tab` only move focus between focusable elements
+(fields, scrollable panes, buttons). Switching tabs or views within a
+screen uses a distinct binding (`^PgDn`/`^PgUp`), shown in the action bar.
+Any widget that consumes its own keys (a viewport scrolling on
+`PgUp`/`PgDn`, a text input) is a full member of the screen's focus cycle;
+"read-only but focusable" is a legitimate focus target.
 
-A corollary to the scrollable-content rule above: any widget that
-consumes its own keys to operate (a viewport consuming `PgUp`/`PgDn` to
-scroll, a text input consuming letters to edit) must be a first-class
-member of the screen's focus cycle — "read-only but focusable" is a
-legitimate focus target, not a special case reserved for text-entry
-fields only.
+**Why:** an earlier Review implementation had no focus model, so every key
+not intercepted earlier fell into the notes field. The fix that introduced
+focus state also repurposed `Tab` from focus to tab-switching as a side
+effect, without that ever being decided. Changing what `Tab` means is a
+design decision, never a bugfix side effect.
 
-**Why:** an earlier Review screen implementation had Reviewer Notes
-`Focus()`-ed unconditionally with no focus model at all, so every key
-not explicitly intercepted earlier in `Update()` silently fell into the
-notes field regardless of the active tab or user intent. The fix
-introduced explicit focus state — but the same change also repurposed
-`Tab` for tab-switching into a focus-cycle key without that being a
-deliberate, confirmed design decision; it landed as a side effect of an
-unrelated bugfix. `Tab`/`Shift+Tab` conventionally mean field-to-field
-navigation in TUI/GUI applications generally; overloading them for
-content-switching is a guiding-principle change and must be surfaced
-and confirmed explicitly, not folded silently into a bugfix patch.
+### Scrollable-content convention
+
+**Rule:** any pane or tab that can hold variable-length content renders
+through a bounded, scrollable widget (`widgets.ContentPane` /
+`bubbles/viewport`), never as a plain string joined into the screen's
+sections. This is judged per tab, not per screen.
+
+**Why:** #76 ("Review screen chops the top of the viewport") was first fixed
+only for the Diff tabs. The Findings tab rendered through a separate
+function with no viewport and no height bound, so the same bug stayed fully
+reproducible there — and more likely, since findings grow with real
+analyzer output.
+
+**Concretely:** a screen with tabs feeds every tab's content through the
+same bounded pane, re-populating it on tab switch. Package Details does
+this through `refreshContent`, the only place tab content is set.
+
+### Single source of truth for section layout
+
+**Rule:** a screen's sections (nav menu, header, warnings, tab bar, content,
+action bar, …) are built by one function that both `View` and the height
+calculation call — never assembled independently in two places.
+
+**Why:** the #76 fix measured section strings built in one helper while
+`View` built its own copy of the same sections. The two agreed by
+coincidence; the next edit to one would have sized the pane against
+content that isn't what's drawn, with no compiler error.
+
+**Concretely:** each screen has `fixedPartsAboveContent` /
+`fixedPartsBelowContent` (Dashboard: `fixedPartsAboveList`), used by both
+`View` and the size calculation, and `widgets.FlexHeight` turns the
+remaining height into the pane size. No hardcoded row counts.
 
 ### Context lifetime: never defer cancel() on a context embedded in an outgoing Msg
 
-**Rule:** if a `context.CancelFunc`'s context is going to be embedded in a
-`Msg` returned from a `tea.Cmd` — for reuse by asynchronous work that runs
-later, when `Update()` processes that message — do **not** `defer cancel()`
-in the closure that created it. Let the context's own timeout
-(`git.GitTimeoutCtx` or equivalent) be the sole cleanup mechanism instead.
+**Rule:** if a context is going to be embedded in a message returned from a
+`tea.Cmd` — for reuse by work that runs later, when `Update` handles that
+message — do not `defer cancel()` in the closure that created it. Let its
+own timeout (`git.GitTimeoutCtx`) be the cleanup.
 
 **Why:** `defer cancel()` fires when the creating closure returns, not when
-the context's last real usage ends. A context can be created, embedded in a
-message via a field like `TraceCtx`, and returned — at which point the
-closure that created it is done and `defer cancel()` fires — while the
-actual downstream consumer of that context (e.g. a fan-out of per-item Cmds
-spawned by that message's handler) hasn't run yet. Every one of those
-downstream operations then inherits an already-cancelled context, and any
-error-handling that fails closed on cancellation (treating "the command
-never ran" the same as "the command returned false") silently produces
-wrong results rather than an obvious crash. This is a live defect that
-shipped: the P1 Refresh bug (`git/merged.go`'s `IsMerged` treating a dead
-context the same as a genuine "not merged" answer) traced directly back to
-this pattern, and is the same underlying defect class as #219's Bug 1
-(premature context cancellation) recurring in a newer code path.
+the context's last use ends. A context created, put in a message's
+`TraceCtx` and returned is already cancelled by the time the work spawned
+from that message runs. Code that fails closed on cancellation then
+silently returns wrong answers: the Dashboard Refresh bug, where `IsMerged`
+read a dead context as "not merged", came from exactly this.
 
-**Concretely:** if a context only needs to bound synchronous work fully
-contained within the closure that creates it, `defer cancel()` is correct
-and fine. If the context escapes that closure — embedded in a returned Msg,
-stored on the model, or otherwise handed to work that runs after the
-closure returns — do **not** defer its cancellation there; size its timeout
-appropriately and let that be the only cleanup, or restructure so
-cancellation is tied to the actual point where the context's last consumer
-finishes.
+**Concretely:** `defer cancel()` is correct when the context only bounds
+work inside the creating closure. If it escapes — into a message, onto the
+model, into later work — discard the cancel deliberately and say why in a
+comment (the Dashboard's Refresh handler does), or tie cancellation to the
+point where the last consumer finishes.
 
 ---
 
-## Action Availability — Single-Source Derivation
+## Known Gaps
 
-### The problem this solves
+Places where the code does not yet follow this guide or the docs. Each is
+known; fix it under its own issue, not as a side effect.
 
-Every enable/disable bug traced this session — #217 (Dashboard frozen
-after Build completes), the Dashboard/Package Details `Merge`/`Build`
-mismatch — had the same root cause: a screen's message handler
-computing button availability via its own partial, ad-hoc logic
-instead of a single shared rule. `ReviewDataMsg`'s handler did a full,
-correct recompute; `OperationCompletedMsg`'s handler took a shortcut
-instead of calling the same path. Two independent implementations of
-"is this action available" will drift, given enough time and enough
-separate edits — this is not a one-off bug to patch, it's a structural
-gap to close.
-
-### The fix: tie availability to the package, not the screen
-
-There is no "Dashboard's Build-button rule" or "Package Details'
-Build-button rule." There is only **one fact**: for a given package
-(`Pkg_curr`), which actions are currently available. Every screen that
-renders action buttons for a package is a consumer of that one fact,
-never an independent computer of it.
-
-```go
-GetActionAvailability(pkg PackageName) map[Action]bool
-```
-
-This is the only function any screen calls to determine button
-enable/disable. No screen implements its own version, partial or
-otherwise — not even for a "fast path" or a "we already have this data
-handy" shortcut. If a shortcut is ever tempting, that's the signal to
-make `GetActionAvailability` itself cheaper, not to bypass it.
-
-### Three layers, composed in order
-
-**1. Gathering functions** (have I/O, one per fact, reusable
-independent of this feature):
-
-```go
-reviewStatus(pkg) -> (status domain.ReviewStatus, hasReview bool)  // reads ReviewStore
-isMerged(pkg)      -> bool                                          // live git check
-buildRecord(pkg)   -> *domain.Build                                 // reads BuildStore
-```
-
-These are exactly `lifecycle.DeriveState`'s existing inputs — nothing
-new is introduced here, they're formalized as named, independent
-functions rather than inline logic scattered per caller. Note they're
-not single-purpose to this feature: `isMerged`, for instance, is
-presumably already needed elsewhere (Dashboard's "commits behind"
-column, `#209`'s `check` command) — consolidating these is a general
-win, not just an action-availability fix.
-
-**2. Pure mapping layer** (zero I/O, table-driven-testable in
-isolation, matching `sprint-plan.md`'s own testing convention):
-
-```go
-state := lifecycle.DeriveState(status, hasReview, isMerged, build)  // already exists, unchanged
-availability := ActionAvailability(state, build.Confirmed)           // new — see below
-```
-
-`ActionAvailability` is `workflow.md` § Action Availability's table,
-expressed as code. That table is the single source of truth for the
-*rule*; this function is its only implementation. If the rule ever
-needs to change, it changes in exactly one place, and `workflow.md`'s
-table is updated to match — the two must never be allowed to drift
-apart.
-
-**3. Orchestration** (the only thing any screen ever calls):
-
-```go
-func GetActionAvailability(pkg PackageName) map[Action]bool {
-    status, hasReview := reviewStatus(pkg)
-    merged := isMerged(pkg)
-    build := buildRecord(pkg)
-    state := lifecycle.DeriveState(status, hasReview, merged, build)
-    return ActionAvailability(state, build.Confirmed)
-}
-```
-
-This function has no logic of its own beyond composition. Nothing
-screen-specific can leak into it, because there's nowhere for it to
-go.
-
-### The persistence-ordering invariant
-
-`GetActionAvailability` only produces a correct answer if everything
-it reads was already durably written before it runs. Concretely: any
-`tea.Cmd` that performs a domain action (Merge, Build, Confirm,
-Publish, ...) must complete its store write(s) synchronously **before**
-constructing or returning the message that signals completion. This is
-trivial to guarantee in Go — don't return the `Msg` until `Save()` has
-returned — but it must be a checked invariant at every operation's
-`Cmd`, not an assumption inherited from "it probably already works
-that way."
-
-### When `GetActionAvailability` is called
-
-Every one of the following triggers calls it fresh, in full, with no
-partial-update alternative:
-
-- A screen gains focus (entering Dashboard, entering Package Details,
-  navigating back to either from another screen).
-- An operation affecting the currently-displayed package completes,
-  regardless of which screen was active when it started (this is
-  exactly the case #217 got wrong — the fix is that this trigger and
-  "screen gains focus" call the *same* function, not two different
-  ones).
-- `R` Refresh is pressed.
-
-There is no fourth case where a screen updates its own button state
-by any other means.
-
-### Testing implication
-
-Because the mapping layer (`ActionAvailability`) has zero I/O, it's
-directly table-driven-testable against `workflow.md`'s own table with
-no git repo or store on disk required — every row of that table
-becomes one test case, matching `sprint-plan.md`'s stated convention
-for "any branchy pure function."
-
-## Open Items
-
-- `Operation` results are currently typed `any` and narrowed at the call
-  site by `Kind`. Worth revisiting once each operation's result type is
-  finalized — may be worth splitting into `OperationCompletedMsg[T]`-style
-  per-kind messages if the `any` narrowing gets unwieldy.
-- Settings / Policy Engine wiring is sketched (`SettingsModel.policy`) but
-  not yet detailed — deferred until Policy Engine design work (build-time
-  network allowlisting, category → severity overrides) is further along.
-
-- **Package Responsibilities:** what `internal/theme`, `internal/widgets`,
-  and `internal/ui/screens` each own/don't own is stated in `sprint-plan.md`
-  § UI Coding Conventions ("Styling lives in `internal/theme`, reusable
-  widgets in `internal/widgets`") rather than duplicated here, to avoid two
-  sources of truth. **Flag before relying on it:** that section states it
-  applies "Sprint 1 and Sprint 6 onward," but Sprint 6 onward is now
-  governed by `sprint-plan-v2-highlevel.md` (the SN-series) — confirm
-  whether `sprint-plan.md` § UI Coding Conventions has itself been
-  re-validated under the SN-series plan, or predates it and needs a
-  supersession note of its own, before treating it as settled.
+- **I/O in the Dashboard's `Update`.** `UpdateFromReview` runs git calls
+  (`IsMerged`, `LocalHeadCommit`) synchronously, and `buildSummary` /
+  `buildEntries` read the build store, inside `Update`. Package Details does
+  its loading correctly in `loadDetailCmd`. Belongs with #404.
+- **Action predicates are per screen** (§ Lifecycle and Action
+  Availability), and `workflow.md` § Action Availability still lists
+  Install and per-screen Analyze, which no longer exist.
+- **Large files.** `screens/dashboard.go` (~1,360 lines), `screens/detail.go`
+  (~1,170) and `ui/app.go` (~1,030, with six near-identical request cases in
+  `update`).
+- **Timeout errors don't say so outside Fetch.** Analyze, Merge, Fetch and
+  the AUR check have a 60-second timeout on git calls (Build has none by
+  design, #211), but only Fetch labels a timeout as one (#409); the others
+  report git's `signal: killed` (#417).
+- **Unused or unread pieces:** `Dependencies.RepoStore`, `OperationLogMsg`
+  and `OperationsQueue.AppendLog` (#407); the `builderBackend`,
+  `analyzerConfig` and `uiPreferences` config keys (#408); `PolicyConfig`
+  overrides; the Settings screen.
+- **`OperationCompletedMsg.Result` is `any`**, narrowed by kind at each
+  use. Revisit if per-kind result types become worth it.

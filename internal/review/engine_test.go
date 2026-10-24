@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/pramod/aur-curator/internal/domain"
@@ -110,10 +111,17 @@ func (s *fakeReviewStore) Delete(domain.PackageName) error {
 // parameter type; Go checks structural satisfaction at the call site.
 type fakeAnalyzerManager struct {
 	findings []domain.Finding
+	err      error
+	// onRun, if set, is called at the start of Run (e.g. to cancel ctx
+	// while the analyzers are running).
+	onRun func()
 }
 
-func (f *fakeAnalyzerManager) Run(context.Context, *git.GitDiff) []domain.Finding {
-	return f.findings
+func (f *fakeAnalyzerManager) Run(context.Context, *git.GitDiff) ([]domain.Finding, error) {
+	if f.onRun != nil {
+		f.onRun()
+	}
+	return f.findings, f.err
 }
 
 // fakePolicyEngine satisfies policy.Engine the same way.
@@ -273,6 +281,7 @@ func TestRecordDecisionApprove(t *testing.T) {
 		domain.ReviewApproved,
 		"safe",
 		"notes",
+		"r",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -306,6 +315,7 @@ func TestRecordDecisionReject(t *testing.T) {
 		domain.ReviewRejected,
 		"bad",
 		"",
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -334,6 +344,7 @@ func TestRecordDecisionRejectsPendingOutcome(t *testing.T) {
 		domain.ReviewPending,
 		"",
 		"",
+		"",
 	)
 
 	if err == nil {
@@ -357,6 +368,7 @@ func TestRecordDecisionImmutable(t *testing.T) {
 		context.Background(),
 		domain.PackageName("yay"),
 		domain.ReviewRejected,
+		"",
 		"",
 		"",
 	)
@@ -427,7 +439,7 @@ func TestRunAnalyzersSetsFindingsAndStatus(t *testing.T) {
 		&fakePolicyEngine{},
 	)
 
-	r, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"))
+	r, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"), "yay@abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +476,7 @@ func TestRunAnalyzersEmptyFindingsStillSetsFindingsRun(t *testing.T) {
 		&fakePolicyEngine{},
 	)
 
-	r, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"))
+	r, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"), "yay@abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +500,7 @@ func TestRunAnalyzersRejectsAlreadyDecidedReview(t *testing.T) {
 		&fakePolicyEngine{},
 	)
 
-	_, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"))
+	_, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"), "yay@abc")
 	if err == nil {
 		t.Fatal("expected error running analyzers on an already-decided review")
 	}
@@ -510,7 +522,7 @@ func TestRunAnalyzersDoesNotComputeRiskAssessment(t *testing.T) {
 		policyEngine,
 	)
 
-	r, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"))
+	r, err := engine.RunAnalyzers(context.Background(), domain.PackageName("yay"), "yay@abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +551,7 @@ func TestRecordDecisionAttachesRiskAssessmentWhenFindingsRun(t *testing.T) {
 
 	engine := NewEngine(&fakeGitProvider{}, store, &fakeAnalyzerManager{}, policyEngine)
 
-	r, err := engine.RecordDecision(context.Background(), domain.PackageName("yay"), domain.ReviewApproved, "", "")
+	r, err := engine.RecordDecision(context.Background(), domain.PackageName("yay"), domain.ReviewApproved, "", "", "yay@abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +588,7 @@ func TestRecordDecisionLeavesRiskAssessmentNilWhenFindingsNotRun(t *testing.T) {
 
 	engine := NewEngine(&fakeGitProvider{}, store, &fakeAnalyzerManager{}, policyEngine)
 
-	r, err := engine.RecordDecision(context.Background(), domain.PackageName("yay"), domain.ReviewApproved, "", "")
+	r, err := engine.RecordDecision(context.Background(), domain.PackageName("yay"), domain.ReviewApproved, "", "", "yay@abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +616,7 @@ func TestRecordDecisionAttachesRiskAssessmentOnRejectToo(t *testing.T) {
 
 	engine := NewEngine(&fakeGitProvider{}, store, &fakeAnalyzerManager{}, policyEngine)
 
-	r, err := engine.RecordDecision(context.Background(), domain.PackageName("yay"), domain.ReviewRejected, "too risky", "")
+	r, err := engine.RecordDecision(context.Background(), domain.PackageName("yay"), domain.ReviewRejected, "too risky", "", "yay@abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,5 +667,273 @@ func TestGetReviewReturnsErrNotFoundWhenMissing(t *testing.T) {
 
 	if store.saveCalls != 0 {
 		t.Fatal("Save called unexpectedly by GetReview for missing package")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FetchAndReview tests
+
+// fakeGitProviderFetch supports independent before/after UpstreamCommit
+// values for FetchAndReview scenarios.
+type fakeGitProviderFetch struct {
+	beforeCommit string
+	afterCommit  string
+	fetchErr     error
+	upstreamErr  error
+}
+
+func (f *fakeGitProviderFetch) Import(context.Context, domain.PackageName) error { return nil }
+func (f *fakeGitProviderFetch) Fetch(context.Context, domain.PackageName) error  { return f.fetchErr }
+func (f *fakeGitProviderFetch) Status(context.Context, domain.PackageName) (*git.RepositoryStatus, error) {
+	return nil, nil
+}
+func (f *fakeGitProviderFetch) CommitsBehind(context.Context, domain.PackageName) (int, error) {
+	return 0, nil
+}
+func (f *fakeGitProviderFetch) UpstreamCommit(context.Context, domain.PackageName) (string, error) {
+	if f.beforeCommit == "" {
+		return f.afterCommit, f.upstreamErr
+	}
+	v := f.beforeCommit
+	f.beforeCommit = f.afterCommit
+	return v, f.upstreamErr
+}
+func (f *fakeGitProviderFetch) Merge(context.Context, domain.PackageName, string) error { return nil }
+func (f *fakeGitProviderFetch) LocalOnlyCommits(context.Context, domain.PackageName) (int, error) {
+	return 0, nil
+}
+func (f *fakeGitProviderFetch) Metadata(context.Context, domain.PackageName) (*git.RepositoryMetadata, error) {
+	return nil, nil
+}
+func (f *fakeGitProviderFetch) Diff(context.Context, domain.PackageName) (*git.GitDiff, error) {
+	return &git.GitDiff{UpstreamCommit: f.afterCommit}, nil
+}
+func (f *fakeGitProviderFetch) ReviewDiff(context.Context, domain.PackageName, string, string) (*git.GitDiff, error) {
+	return &git.GitDiff{UpstreamCommit: f.afterCommit}, nil
+}
+func (f *fakeGitProviderFetch) CloneAt(context.Context, domain.PackageName, string, string) error {
+	return nil
+}
+func (f *fakeGitProviderFetch) LocalHeadCommit(context.Context, domain.PackageName) (string, error) {
+	return "", nil
+}
+func (f *fakeGitProviderFetch) IsMerged(context.Context, domain.PackageName, string) (bool, error) {
+	return false, nil
+}
+func (f *fakeGitProviderFetch) FileAtCommit(context.Context, domain.PackageName, string, string) (string, error) {
+	return "", nil
+}
+
+type fakeReviewStoreFetch struct {
+	review  *domain.Review
+	err     error
+	saveErr error
+	saved   *domain.Review
+}
+
+func (s *fakeReviewStoreFetch) Get(domain.PackageName) (*domain.Review, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.review == nil {
+		return nil, domain.ErrNotFound
+	}
+	r := *s.review
+	return &r, nil
+}
+
+func (s *fakeReviewStoreFetch) Save(_ domain.PackageName, r *domain.Review) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	c := *r
+	s.saved = &c
+	return nil
+}
+
+func (s *fakeReviewStoreFetch) Delete(domain.PackageName) error {
+	s.saved = nil
+	return nil
+}
+
+func TestFetchAndReview(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		before      string
+		after       string
+		stored      *domain.Review
+		storeErr    error
+		upstreamErr error
+		expChanged  bool
+		expEmpty    bool
+		expStarted  bool
+		expCommit   string
+		expError    bool
+	}{
+		{
+			name:       "moved, decided",
+			before:     "A",
+			after:      "B",
+			stored:     &domain.Review{ID: "pkg@A", UpstreamCommit: "A", Status: domain.ReviewApproved},
+			expChanged: true,
+			expStarted: true,
+			expCommit:  "B",
+		},
+		{
+			name:       "stuck, approved",
+			before:     "B",
+			after:      "B",
+			stored:     &domain.Review{ID: "pkg@A", UpstreamCommit: "A", Status: domain.ReviewApproved},
+			expChanged: false,
+			expStarted: true,
+			expCommit:  "B",
+		},
+		{
+			name:       "stuck, pending",
+			before:     "B",
+			after:      "B",
+			stored:     &domain.Review{ID: "pkg@A", UpstreamCommit: "A", Status: domain.ReviewPending},
+			expStarted: true,
+			expCommit:  "B",
+		},
+		{
+			name:       "stuck, rejected",
+			before:     "B",
+			after:      "B",
+			stored:     &domain.Review{ID: "pkg@A", UpstreamCommit: "A", Status: domain.ReviewRejected},
+			expStarted: true,
+			expCommit:  "B",
+		},
+		{
+			name:       "up to date, approved",
+			before:     "B",
+			after:      "B",
+			stored:     &domain.Review{ID: "pkg@B", UpstreamCommit: "B", Status: domain.ReviewApproved},
+			expChanged: false,
+			expStarted: false,
+			expCommit:  "B",
+		},
+		{
+			name:       "up to date, pending",
+			before:     "B",
+			after:      "B",
+			stored:     &domain.Review{ID: "pkg@B", UpstreamCommit: "B", Status: domain.ReviewPending, ReviewerNotes: "keep me"},
+			expChanged: false,
+			expStarted: false,
+			expCommit:  "B",
+		},
+		{
+			name:       "up to date, rejected",
+			before:     "B",
+			after:      "B",
+			stored:     &domain.Review{ID: "pkg@B", UpstreamCommit: "B", Status: domain.ReviewRejected},
+			expChanged: false,
+			expStarted: false,
+			expCommit:  "B",
+		},
+		{
+			name:       "no review stored",
+			before:     "A",
+			after:      "B",
+			expChanged: true,
+			expStarted: true,
+			expCommit:  "B",
+		},
+		{
+			name:       "no engine",
+			before:     "A",
+			after:      "B",
+			expChanged: true,
+			expStarted: false,
+			expCommit:  "",
+		},
+		{
+			name:     "store read error",
+			before:   "A",
+			after:    "B",
+			storeErr: fmt.Errorf("read failed"),
+			expError: true,
+		},
+		{
+			name:        "commit read error",
+			before:      "A",
+			after:       "B",
+			upstreamErr: fmt.Errorf("read failed"),
+			expEmpty:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeReviewStoreFetch{
+				review: tc.stored,
+				err:    tc.storeErr,
+			}
+
+			provider := &fakeGitProviderFetch{
+				beforeCommit: tc.before,
+				afterCommit:  tc.after,
+				upstreamErr:  tc.upstreamErr,
+			}
+
+			var engine *Engine
+			if tc.name != "no engine" {
+				engine = NewEngine(provider, store, &fakeAnalyzerManager{}, &fakePolicyEngine{})
+			}
+
+			if tc.name == "store read error" {
+				_, err := FetchAndReview(context.Background(), provider, engine, "pkg")
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+
+			res, err := FetchAndReview(context.Background(), provider, engine, "pkg")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if res.Changed != tc.expChanged {
+				t.Errorf("Changed=%v, want %v", res.Changed, tc.expChanged)
+			}
+			if res.EmptyResult != tc.expEmpty {
+				t.Errorf("EmptyResult=%v, want %v", res.EmptyResult, tc.expEmpty)
+			}
+			if res.ReviewStarted != tc.expStarted {
+				t.Errorf("ReviewStarted=%v, want %v", res.ReviewStarted, tc.expStarted)
+			}
+			if res.ReviewCommit != tc.expCommit {
+				t.Errorf("ReviewCommit=%q, want %q", res.ReviewCommit, tc.expCommit)
+			}
+
+			if tc.expEmpty {
+				return
+			}
+
+			// Verify stored review state
+			if tc.expStarted || (tc.expChanged && tc.name == "no review stored") {
+				if store.saved == nil {
+					t.Fatal("expected a saved review, got nil")
+				}
+				if store.saved.Status != domain.ReviewPending {
+					t.Errorf("saved Status=%q, want %q", store.saved.Status, domain.ReviewPending)
+				}
+				if store.saved.UpstreamCommit != tc.expCommit {
+					t.Errorf("saved UpstreamCommit=%q, want %q", store.saved.UpstreamCommit, tc.expCommit)
+				}
+				if store.saved.ID != domain.ReviewID("pkg@"+tc.expCommit) {
+					t.Errorf("saved ID=%q, want %q", store.saved.ID, "pkg@"+tc.expCommit)
+				}
+			} else {
+				if store.saved != nil {
+					t.Errorf("expected no saved review, got %+v", store.saved)
+				}
+			}
+		})
 	}
 }

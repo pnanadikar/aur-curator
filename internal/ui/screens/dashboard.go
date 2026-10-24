@@ -633,7 +633,7 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			entries := m.pkgList.VisibleEntries()
 			if len(entries) > 0 && m.pkgList.Cursor() < len(entries) {
 				entry := entries[m.pkgList.Cursor()]
-				if isDashboardBuildEnabled(entry.Lifecycle) {
+				if isBuildAvailable(entry.Lifecycle) {
 					var cmd tea.Cmd
 					m.gate, cmd = m.gate.Start(entry.Name)
 					return m, cmd
@@ -925,17 +925,6 @@ func (m *DashboardModel) buildEntries(ctx context.Context, caller string) {
 	// height-derived value. Before the first WindowSizeMsg lastHeight is 0 and
 	// listPageSize floors at 6.
 	m.pkgList.SetPageSize(m.listPageSize(m.lastHeight))
-}
-
-// isDashboardBuildEnabled reports whether Build (T10) or rebuild (T15) is
-// available in state lc (workflow.md § Dashboard / Package Details). Local
-// commits never disable it: the Build confirmation flow asks instead.
-func isDashboardBuildEnabled(lc lifecycle.State) bool {
-	switch lc {
-	case lifecycle.Merged, lifecycle.Built, lifecycle.Confirmed, lifecycle.Published:
-		return true
-	}
-	return false
 }
 
 // nextActionFor returns the human-readable next action label for a
@@ -1309,19 +1298,19 @@ func (m DashboardModel) actions() []widgets.Action {
 		return prereq
 	}
 
-	mergeReason := rowReason(reasonNothingToMerge)
-	if ok && m.lifecycle[entry.Name] != lifecycle.Approved {
-		mergeReason = prereqApproved
+	mergeWhy := reasonNoPackage
+	if ok {
+		mergeWhy = mergeReason(m.lifecycle[entry.Name])
 	}
 
 	return []widgets.Action{
 		{Key: "^PgDn/^PgUp", Label: "Cards", Enabled: true},
 		{Key: "^O", Label: "Sort", Enabled: m.cardID == CardPackages, Reason: reasonPackagesCard},
 		{Key: "ENTER", Label: "Open", Enabled: ok, Reason: reasonNoPackage},
-		{Key: "M", Label: "Merge", Enabled: ok && m.isMergeEnabled(entry.Name), Reason: mergeReason},
+		{Key: "M", Label: "Merge", Enabled: ok && m.isMergeEnabled(entry.Name), Reason: mergeWhy},
 		{Key: "F", Label: "Fetch", Enabled: ok, Reason: reasonNoPackage},
 		{Key: "R", Label: "Refresh", Enabled: true},
-		{Key: "B", Label: "Build", Enabled: ok && isDashboardBuildEnabled(entry.Lifecycle), Reason: rowReason(prereqMergedOrLater)},
+		{Key: "B", Label: "Build", Enabled: ok && isBuildAvailable(entry.Lifecycle), Reason: rowReason(prereqMergedOrLater)},
 		{Key: "C", Label: "Confirm", Enabled: ok && m.isConfirmEnabled(entry.Name), Reason: rowReason(prereqBuilt)},
 		{Key: "P", Label: "Publish", Enabled: ok && m.isPublishEnabled(entry.Name), Reason: rowReason(prereqConfirmed)},
 	}
@@ -1337,13 +1326,8 @@ func (m DashboardModel) renderActionBar() string {
 }
 
 func (m DashboardModel) isMergeEnabled(pkg domain.PackageName) bool {
-	if lc, ok := m.lifecycle[pkg]; !ok || lc != lifecycle.Approved {
-		return false
-	}
-	if up, ok := m.updates[pkg]; !ok || up <= 0 {
-		return false
-	}
-	return true
+	lc, ok := m.lifecycle[pkg]
+	return ok && isMergeAvailable(lc)
 }
 
 func (m DashboardModel) isPublishEnabled(pkg domain.PackageName) bool {

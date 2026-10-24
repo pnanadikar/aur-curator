@@ -50,9 +50,11 @@ type FetchRequestedMsg struct {
 	TraceCtx context.Context
 }
 
-// AnalyzeRequestedMsg requests an analyzer run.
+// AnalyzeRequestedMsg requests an analyzer run on the review with ReviewID,
+// the review the screen shows (#399).
 type AnalyzeRequestedMsg struct {
 	Pkg      domain.PackageName
+	ReviewID domain.ReviewID
 	TraceCtx context.Context
 }
 

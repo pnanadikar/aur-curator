@@ -21,8 +21,8 @@ type fakeAnalyzerManager struct{}
 func (fakeAnalyzerManager) Run(
 	context.Context,
 	*git.GitDiff,
-) []domain.Finding {
-	return nil
+) ([]domain.Finding, error) {
+	return nil, nil
 }
 
 func TestReviewScreenApproveRequiresConfirmation(t *testing.T) {
@@ -1105,6 +1105,17 @@ func TestReviewScreenRenderTabContentFindings(t *testing.T) {
 			},
 		},
 	})
+	// The screen shows the stored review: the findings appear with the
+	// reload that follows the operation (#399).
+	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+		PackageName:    "yay",
+		Status:         domain.ReviewPending,
+		FindingsStatus: domain.FindingsRun,
+		Findings: []domain.Finding{
+			{Category: "shell_exec", Summary: "Unsafe shell exec"},
+			{Category: "url_new", Summary: "New URL"},
+		},
+	}})
 	model = updated.(ReviewScreen)
 
 	view := model.View()
@@ -1162,6 +1173,14 @@ func TestReviewScreenRenderFindingsContentEmpty(t *testing.T) {
 			Findings:       []domain.Finding{},
 		},
 	})
+	// The screen shows the stored review: the findings appear with the
+	// reload that follows the operation (#399).
+	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+		PackageName:    "yay",
+		Status:         domain.ReviewPending,
+		FindingsStatus: domain.FindingsRun,
+		Findings:       []domain.Finding{},
+	}})
 	model = updated.(ReviewScreen)
 
 	view := model.View()
@@ -1189,6 +1208,17 @@ func TestReviewScreenRenderFindingsContentWithFindings(t *testing.T) {
 			},
 		},
 	})
+	// The screen shows the stored review: the findings appear with the
+	// reload that follows the operation (#399).
+	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+		PackageName:    "yay",
+		Status:         domain.ReviewPending,
+		FindingsStatus: domain.FindingsRun,
+		Findings: []domain.Finding{
+			{Category: "shell_exec", Summary: "Unsafe shell exec", Analyzer: "shell"},
+			{Category: "version_bump", Summary: "Version bump"},
+		},
+	}})
 	model = updated.(ReviewScreen)
 
 	view := model.View()
@@ -1221,6 +1251,14 @@ func TestReviewScreenOperationCompletedMsgSwitchesToFindingsOnAnalyzerSuccess(t 
 			Findings:       []domain.Finding{},
 		},
 	})
+	// The screen reloads the stored review after the operation (#399);
+	// the tab switches when that reload arrives.
+	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+		PackageName:    "yay",
+		Status:         domain.ReviewPending,
+		FindingsStatus: domain.FindingsRun,
+		Findings:       []domain.Finding{},
+	}})
 	screen := updated.(ReviewScreen)
 
 	if got := screen.tabs.Active().Label; got != "Findings" {
@@ -1298,8 +1336,10 @@ func TestReviewScreenOperationFailedMsgClearsLoading(t *testing.T) {
 	if screen.err != nil {
 		t.Fatalf("err should be nil after OperationFailedMsg (toast carries the error), got %q", screen.err.Error())
 	}
-	if cmd != nil {
-		t.Fatalf("expected nil cmd, got %T", cmd())
+	// A failed operation may still have replaced the review: the screen
+	// reloads it (#399).
+	if cmd == nil {
+		t.Fatal("expected a reload cmd after OperationFailedMsg with matching OpID")
 	}
 }
 
@@ -1371,61 +1411,54 @@ func TestReviewScreenOperationFailedMsgMismatchedOpIDNoPanic(t *testing.T) {
 	}
 }
 
-func TestReviewScreenOperationCompletedMsgSetsReviewAndClearsLoading(t *testing.T) {
+// TestReviewScreenOperationCompletedMsgReloadsAndClearsLoading: a completed
+// operation for this package clears loading and reloads the stored review
+// instead of taking msg.Result (#399); one for another package changes
+// nothing.
+func TestReviewScreenOperationCompletedMsgReloadsAndClearsLoading(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                string
-		msg                 msgs.OperationCompletedMsg
-		wantLoading         bool
-		wantReview          *domain.Review
-		wantReviewUnchanged bool
-		wantErr             bool
+		name        string
+		msg         msgs.OperationCompletedMsg
+		wantLoading bool
+		wantReload  bool
 	}{
 		{
 			name: "matching opid with review result",
 			msg: msgs.OperationCompletedMsg{
 				OpID:   "yay",
-				Result: &domain.Review{PackageName: "yay", Status: domain.ReviewPending},
+				Result: &domain.Review{ID: "yay@other", PackageName: "yay", Status: domain.ReviewPending},
 			},
 			wantLoading: false,
-			wantReview:  &domain.Review{PackageName: "yay", Status: domain.ReviewPending},
+			wantReload:  true,
 		},
 		{
-			name: "matching opid with non-review result type assertion fails",
+			name: "matching opid with string result",
 			msg: msgs.OperationCompletedMsg{
 				OpID:   "yay",
 				Result: "build completed",
 			},
-			wantLoading:         false,
-			wantReviewUnchanged: true,
+			wantLoading: false,
+			wantReload:  true,
 		},
 		{
-			name: "matching opid with nil result clears loading",
+			name: "matching opid with nil result",
 			msg: msgs.OperationCompletedMsg{
 				OpID:   "yay",
 				Result: nil,
 			},
-			wantLoading:         false,
-			wantReviewUnchanged: true,
+			wantLoading: false,
+			wantReload:  true,
 		},
 		{
-			name: "matching opid with string result clears loading",
-			msg: msgs.OperationCompletedMsg{
-				OpID:   "yay",
-				Result: "Analyze skipped — review already decided",
-			},
-			wantLoading:         false,
-			wantReviewUnchanged: true,
-		},
-		{
-			name: "matching opid with mismatched opid",
+			name: "mismatched opid",
 			msg: msgs.OperationCompletedMsg{
 				OpID:   "different-pkg",
 				Result: &domain.Review{PackageName: "different-pkg"},
 			},
-			wantLoading:         true,
-			wantReviewUnchanged: true,
+			wantLoading: true,
+			wantReload:  false,
 		},
 	}
 
@@ -1445,24 +1478,20 @@ func TestReviewScreenOperationCompletedMsgSetsReviewAndClearsLoading(t *testing.
 			if screen.loading != tt.wantLoading {
 				t.Errorf("loading = %v, want %v", screen.loading, tt.wantLoading)
 			}
-			if tt.wantReview != nil {
-				if screen.review == nil {
-					t.Fatal("expected review to be set, got nil")
-				}
-				if screen.review.PackageName != tt.wantReview.PackageName {
-					t.Errorf("review.PackageName = %q, want %q", screen.review.PackageName, tt.wantReview.PackageName)
-				}
-				if screen.review.Status != tt.wantReview.Status {
-					t.Errorf("review.Status = %q, want %q", screen.review.Status, tt.wantReview.Status)
-				}
+			if screen.review != originalReview {
+				t.Fatal("review pointer changed: the screen must not take msg.Result")
 			}
-			if tt.wantReviewUnchanged && screen.review != originalReview {
-				t.Fatal("review pointer changed when it should have been unchanged by mismatched OpID")
+			if screen.err != nil {
+				t.Errorf("err = %v, want nil", screen.err)
 			}
-			if (screen.err != nil) != tt.wantErr {
-				t.Errorf("err = %v, wantErr = %v", screen.err != nil, tt.wantErr)
-			}
-			if cmd != nil {
+			if tt.wantReload {
+				if cmd == nil {
+					t.Fatal("expected a reload cmd")
+				}
+				if _, ok := cmd().(reviewLoadedMsg); !ok {
+					t.Fatal("reload cmd did not produce a reviewLoadedMsg")
+				}
+			} else if cmd != nil {
 				t.Fatalf("expected nil cmd, got %T", cmd())
 			}
 		})

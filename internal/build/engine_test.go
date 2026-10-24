@@ -1672,7 +1672,7 @@ func TestEngineLastSuccessPersistedThenSuccessPathError(t *testing.T) {
 
 // fakeFailingArtifactStore wraps a real ArtifactStore and fails Delete calls.
 type fakeFailingArtifactStore struct {
-	store      store.ArtifactStore
+	store      domain.ArtifactStore
 	failDelete bool
 }
 

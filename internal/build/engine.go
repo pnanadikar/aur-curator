@@ -25,7 +25,7 @@ import (
 type Engine struct {
 	builder  Builder
 	store    domain.BuildStore
-	artStore store.ArtifactStore
+	artStore domain.ArtifactStore
 	git      git.Provider
 	paths    *store.StorePaths
 }
@@ -34,7 +34,7 @@ type Engine struct {
 func NewEngine(
 	builder Builder,
 	buildStore domain.BuildStore,
-	artStore store.ArtifactStore,
+	artStore domain.ArtifactStore,
 	gitProvider git.Provider,
 	paths *store.StorePaths,
 ) *Engine {
@@ -53,7 +53,7 @@ func (e *Engine) BuildStore() domain.BuildStore {
 }
 
 // ArtifactStore returns the ArtifactStore used by this engine.
-func (e *Engine) ArtifactStore() store.ArtifactStore {
+func (e *Engine) ArtifactStore() domain.ArtifactStore {
 	return e.artStore
 }
 

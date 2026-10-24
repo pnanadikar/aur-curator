@@ -8,7 +8,6 @@ import (
 
 	aurlog "github.com/pramod/aur-curator/internal/activitylog"
 	"github.com/pramod/aur-curator/internal/domain"
-	"github.com/pramod/aur-curator/internal/store"
 )
 
 // buildSaver is the part of domain.BuildStore that
@@ -24,7 +23,7 @@ type buildSaver interface {
 // after the save succeeds; a failed save is logged and reported instead,
 // and build.ArtifactIDs is left as it was. It returns the number of
 // references removed and the findings to report.
-func removeDanglingArtifactRefs(ctx context.Context, activityLogPath string, bs buildSaver, as store.ArtifactStore,
+func removeDanglingArtifactRefs(ctx context.Context, activityLogPath string, bs buildSaver, as domain.ArtifactStore,
 	pkg domain.PackageName, build *domain.Build) (int, []string) {
 
 	var kept, dangling []domain.ArtifactID

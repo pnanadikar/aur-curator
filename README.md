@@ -100,6 +100,10 @@ the config file also works; if you use it, keep the file private
 (`chmod 600`). aur-curator warns at startup if the file is readable by
 other users.
 
+If Gitea rejects the token (401) or it lacks a scope or permission (403),
+Import and Remove say so, include Gitea's own message, and name where the
+token came from: the environment variable or the config file.
+
 ### 2. Git credentials for pushing
 
 The API token above is used only for creating and deleting repositories.

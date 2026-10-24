@@ -1,8 +1,9 @@
 # Package Lifecycle
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-23
 > Status: Active
-> Companion docs: domain.md, tui-review.md, developer-guide.md
+> Companion docs: domain.md, tui-review.md, developer-guide.md,
+> git-command-walkthrough.md (the git commands behind each step)
 
 ```plaintext
 Repository Imported
@@ -54,29 +55,29 @@ in **Review Pending** — there is no separate Fetched step for a new
 package, since Import already retrieves the upstream content that Fetch
 would otherwise pull.
 
-Import is owned by the Git Provider and performs the following as one
-operation:
+Import is a CLI command (`aur-curator <config-file> import <package>`;
+the TUI's Import is deferred, #112). The Git Provider performs the
+repository part as one operation:
 
-1. Create an empty repository on the personal Gitea instance via its API.
-2. Clone the AUR repository, adding it as the `upstream` remote.
-3. Add the new Gitea repository as the `origin` remote.
-4. Reset local `master` to an empty/orphan state — no upstream content is
-   merged in at this point. This is what makes the "(new) vs
-   upstream/master" comparison above genuine: local `master` has no
-   content yet, so the diff is fully additive, not merely displayed as
+1. Check that the package exists on the AUR (RPC); nothing is created if
+   it does not.
+2. Create an empty repository on the personal Gitea instance via its API.
+3. Clone the AUR repository, renaming its remote to `upstream`.
+4. Add the new Gitea repository as the `origin` remote.
+5. Replace local `master` with an empty, unrelated placeholder commit — no
+   upstream content is merged in at this point. This is what makes the
+   "(new) vs upstream/master" comparison above genuine: local `master` has
+   no content yet, so the diff is fully additive, not merely displayed as
    one.
 
-Import performs no further step after this. There is deliberately no
-"register the package" or "refresh the catalog" step: Package Catalog
-performs a live filesystem scan on every call rather than maintaining a
-cache (`interfaces.md` § Package Catalog; full rationale in
-`docs/interface-packets/package-catalog.md` § Design Note: No Cache).
-The package is already curated as of step 2 — its directory exists on
-disk from that point — so nothing further needs to happen for it to be
-picked up; the next call to Package Catalog from anywhere simply sees
-it. An earlier version of this document had a step 5 ("refresh the
-catalog's cache"); removed once the cache itself was removed, see
-`domain-package-review.md` DOM-004/DOM-008. 
+The command then creates the package's first Review (Pending), and runs
+the analyzers on it if `autoAnalyzeAfterImport` is set; a failed analysis
+is reported but does not undo the Import.
+
+There is deliberately no "register the package" step: Package Catalog
+scans the filesystem on every call rather than keeping a cache
+(`interfaces.md` § Package Catalog). The package is curated as soon as its
+directory exists (step 3); the next catalog call anywhere sees it.
 
 Nothing is pushed to `origin` during Import — the Gitea repository stays
 empty until Merge, which creates local `master` from the reviewed
@@ -94,6 +95,15 @@ manually verify and clean up — e.g. delete an orphaned Gitea repo, remove
 a partial local clone. Silence about partial state is not acceptable;
 the message is mandatory,
 not optional error text.
+
+The message — the same for a failure and a timeout — names what to clean
+up before retrying: the Gitea repository (its clone URL) once it has been
+created, and the local directory `<rootPath>/<pkg>` once the clone has
+run, or "if it exists" when a timeout interrupted the clone. Every failure
+and timeout is also written to the error log with the same guidance
+(#401). If Import succeeds but creating its first review fails, nothing
+needs cleaning up: the CLI says the package is imported, and the
+Dashboard creates the review the next time it loads the package.
 
 ## Review Decisions
 
@@ -115,7 +125,7 @@ Merge is **fast-forward only**: local `master` advances to the reviewed
 upstream commit, and nothing else. If local `master` has commits of its own
 (made outside aur-curator — see § Local Commits Not on Upstream), the
 fast-forward is impossible and Merge fails with a clear message naming how
-many there are; the user resolves it in git (rebase or merge) outside the
+many there are; the user resolves it in git (rebase or reset) outside the
 app. Conflict resolution is deliberately not built into the TUI at this scale.
 
 Merge must fast-forward to `Review.UpstreamCommit` — the commit that was
@@ -161,10 +171,10 @@ This section is the single source of truth for package lifecycle
 transitions and for which domain actions are enabled in each state, across
 the Dashboard, Package Details, and Review screens. Dashboard and Package
 Details must share identical conditions — any divergence between them is a
-bug, to be fixed against this section, not per-screen discretion.
-`ActionAvailability()` (`developer-guide.md` § Action Availability —
-Single-Source Derivation) is this section expressed as code; the two must
-never drift.
+bug, to be fixed against this section, not per-screen discretion. Today
+each screen implements these conditions itself (`developer-guide.md`
+§ Lifecycle and Action Availability); one shared implementation of this
+section is proposed for v2 (#404).
 
 What each state *means*, and how it is derived, is defined in `domain.md`
 § Package → Lifecycle. In short: before the reviewed upstream commit is
@@ -187,12 +197,12 @@ is the most recent successful build; "HEAD" is local `master` HEAD.
 | # | State | Action | Guard | System action | On success → | On failure / cancel → |
 | --- | --- | --- | --- | --- | --- | --- |
 | T1 | Not curated | Import | — | Create Gitea repo, clone AUR as `upstream`, add `origin`, empty local `master` | Review Pending | Not curated, partial-failure report [1] |
-| T2 | Any | Fetch | New upstream commit | Update `upstream/master`; replace the current review with a new Pending review | Review Pending | Same state [2] |
-| T3 | Any | Fetch | No upstream change | Update `upstream/master` (nothing new) | Same state | Same state |
-| T4 | Review Pending | Analyze | — | Run analyzers, record findings | Review Pending | Review Pending [3] |
-| T5 | Review Pending | Approve | AutoMerge off | Record Approved + optional reviewer notes | Approved | Review Pending [4] |
-| T6 | Review Pending | Approve | AutoMerge on | Record Approved + notes, then Merge (T9) | Merged | Approved — merge failed, reported [5] |
-| T7 | Review Pending | Reject | — | Record Rejected + optional rationale | Rejected | Review Pending |
+| T2 | Any | Fetch | `upstream/master` after the fetch differs from the stored review's upstream commit, or there is no review | Update `upstream/master`; replace the current review with a new Pending review | Review Pending | Same state [2] |
+| T3 | Any | Fetch | `upstream/master` equals the stored review's upstream commit | Update `upstream/master` (nothing new) | Same state | Same state |
+| T4 | Review Pending | Analyze (Review screen) | — | Run analyzers on the review's stored range, record findings | Review Pending | Review Pending [3][15] |
+| T5 | Review Pending | Approve | AutoMerge off | Record Approved + optional reviewer notes | Approved | Review Pending [4][15] |
+| T6 | Review Pending | Approve | AutoMerge on | Record Approved + notes, then Merge (T9) | Merged | Approved — merge failed, reported [5]; Review Pending if refused [15] |
+| T7 | Review Pending | Reject | — | Record Rejected + optional rationale | Rejected | Review Pending [15] |
 | T8 | Rejected | (none but Fetch) | — | — | — | — [6] |
 | T9 | Approved | Merge | — | Fast-forward local `master` to the reviewed commit, push to `origin` | Merged | Approved — merge failed, reported [7] |
 | T10 | Merged | Build | — | Build HEAD | Built (new last success, unconfirmed) | Merged [8] |
@@ -209,8 +219,8 @@ valid.
 Notes:
 
 1. No automatic rollback; the user is told which steps completed (§ Partial Import Failure). Dashboard Import is deferred (#112). The first review shows a fully additive diff.
-2. Replaces a Pending, Approved, or Rejected review. Local HEAD and the last success are unchanged. The AUR update card can signal a new upstream version before Fetch.
-3. Changes only the findings status (Not Run / 0 / N), which selects the Approve prompt text (`tui-review.md` § Confirmation Flows).
+2. Replaces a Pending, Approved, or Rejected review. Local HEAD and the last success are unchanged. The AUR update card can signal a new upstream version before Fetch. The comparison is with the upstream commit the stored review covers (`Review.UpstreamCommit`), not with the package version and not with where `upstream/master` was before this fetch — so a new commit without a version bump still starts a review, and it holds however `upstream/master` got there: this Fetch, an earlier `update`, or a `git fetch` outside the app (#405).
+3. Changes only the findings status (Not Run / 0 / N), which selects the Approve prompt text (`tui-review.md` § Confirmation Flows). Analyze runs on the review the Review screen shows; it does not fetch and never starts a review (#399). If any analyzer fails, or the run is cancelled, nothing is recorded: the findings status keeps its previous value and the operation fails with an error naming the analyzer (#410).
 4. The Approve modal is always shown; its notes go to `Review.ReviewerNotes`.
 5. The Approved decision is recorded even when the merge fails.
 6. The only way out of Rejected is a Fetch bringing a newer upstream commit (T2). A previously published version stays in the local package repository and remains installable with plain pacman (§ Installation). A rejected change can be fixed locally only outside the app (§ Local Commits Not on Upstream).
@@ -222,27 +232,35 @@ Notes:
 12. A cancelled build is not recorded (#304); every other cancelled operation leaves no state change.
 13. CLI only. aur-curator does not uninstall the package; it reports whether it is installed. The shared package repository is deliberately untouched (§ Remove Mechanics).
 14. Publish records every change it makes to the repository directory and undoes them all if any copy or `repo-add` fails (#379), so a failed publish never leaves a file that differs from the database entry naming it. Per artifact: a file already there with the same content is left alone; a different file with the same name (a rebuild of the same commit) is renamed to `<file>.aur-curator-backup` first, and put back on failure or deleted on success; a new file is removed again on failure. New content goes in through a temporary file (`.aur-curator-publish-*`) renamed into place, so a file is never half-written. If restoring fails, the error says so and `check` reports the mismatch. A backup that already exists was left by a publish that was killed before it finished; Publish deletes it (error log entry) and goes ahead, since it is about to replace the file and the database entry anyway. If that publish fails too, the restored file may not be the one the database names: `check` reports it, and publishing again fixes it. A stray `.aur-curator-publish-*` temporary file left by a kill is never named by the database and can simply be deleted.
+15. Analyze, Approve and Reject act only on the review the Review screen shows: each passes that review's ID, and if the stored review has a different one — a Fetch replaced it after the screen loaded it — the action is refused, records nothing, and is logged (activity log and error log, like note 9's refusals). The guard is enforced in the Review Engine (`RunAnalyzers`, `RecordDecision`), not only in the UI. The Review screen stays open, reloads the stored review, and shows the refusal as its error banner (#399).
 
 ### Dashboard / Package Details
 
 Derived from the matrix. These two screens share the same domain-action set
-and conditions. Package Details additionally has `View Build Log` and `Back`,
-which have no Dashboard equivalent.
+and conditions.
 
-| Action | Enabled when | Matrix rows |
-| --- | --- | --- |
-| Open / Open Review | always | — |
-| Fetch | always | T2, T3 |
-| Refresh (Dashboard only) | always | — |
-| Analyze | `state == ReviewPending` | T4 |
-| Merge | `state == Approved` | T9 |
-| Build | `state ∈ {Merged, Built, Confirmed, Published}` | T10, T15 |
-| Confirm | `state == Built` | T11 |
-| Publish | `state == Confirmed` | T12 |
-| Cancel (`^T`) | an operation is running (global, App-level) | T16 |
-| View Build Log (Package Details only) | a build record exists for this package | — |
-| Search (Dashboard only) | always | — |
-| Back (Package Details only) | always | — |
+| Action | Key | Enabled when | Matrix rows |
+| --- | --- | --- | --- |
+| Open (Dashboard) | `Enter` | a row is selected | — |
+| Open Review (Package Details) | `Enter` | the package has a review | — |
+| Fetch | `f` | always | T2, T3 |
+| Merge | `m` | `state == Approved` | T9 |
+| Build | `b` | `state ∈ {Merged, Built, Confirmed, Published}` | T10, T15 |
+| Confirm | `c` | `state == Built` | T11 |
+| Publish | `p` | `state == Confirmed` | T12 |
+| Cancel | `^T` | an operation is running (global, App-level) | T16 |
+| Refresh (Dashboard only) | `r` | always | — |
+| Cards, Sort, Search (Dashboard only) | `^PgDn`/`^PgUp`, `^O`, type | always (Sort on the Packages card only) | — |
+| Tabs (Package Details only) | `^PgDn`/`^PgUp` | always; the Build Log tab says "No builds yet" when there is none | — |
+| Help | `?` | always | — |
+| Back (Package Details only) | `Esc` | always | — |
+
+Analyze is on the Review screen only (§ Review).
+
+Merge and Build depend on whether the **reviewed commit** is in `master`
+(`Git.IsMerged(Review.UpstreamCommit)`, the same check the lifecycle uses),
+never on where upstream's tip is: a merged package whose upstream has moved
+on can still be built, and has nothing to merge (#406).
 
 Package Details has no Refresh: it reloads on every arrival and after each operation on its package. The Dashboard's Refresh re-scans the catalog and re-runs the AUR update check.
 
@@ -257,7 +275,11 @@ alone; no build flags are consulted for availability.
 | Run Analyzers (`a`) | `Review.Status == Pending` |
 | Approve (`Enter`) | `Review.Status == Pending` |
 | Reject (`^X`) | `Review.Status == Pending` |
+| Help (`?`) | always |
 | Back (`Esc`) | always |
+
+Reject uses `^X`, not a plain letter, so a decision is never taken by a
+stray keypress.
 
 ### Build Confirmation
 
@@ -396,8 +418,9 @@ after an explicit interactive confirmation:
 2. Delete the personal Gitea repository via its API.
 3. Delete every build directory the package’s records reference under 
    .aur-curator/builds/ — the latest attempt, the last success and the last failure.
-4. Delete the package's derived store records — Review, Build, Artifact —
-   and the `.aur-curator/packages/<pkg>/` directory that held them.
+4. Delete the package's store records: its Review and Build records, the
+   `.aur-curator/packages/<pkg>/` directory that held them, and each of
+   its Artifact records (`.aur-curator/artifacts/<artifact-id>/`).
 5. Delete the local git clone (the workspace package directory).
 
 Each step is attempted independently; a failure in one does not abort
@@ -427,44 +450,33 @@ exactly which steps completed and which didn't. Silence about partial
 state is not acceptable here either — the same standard as § Partial
 Import Failure above.
 
-#### § Local Version — Git-Committed, Not Working-Tree
+## Local Version: Git-Committed, Not Working Tree
 
-Principle: wherever a package's "local version" is needed for a staleness or update comparison, it means the PKGBUILD content committed at local master HEAD, read via the Git provider (LocalHeadCommit + FileAtCommit). It never means the raw file on disk in the managed workspace's working tree.
-Rationale
+Wherever a package's "local version" is needed for a staleness or update
+comparison, it means the PKGBUILD **committed** in git, read through the
+Git provider (`LocalHeadCommit` + `FileAtCommit`), and the version parsed
+from that content. It never means the PKGBUILD file in the package
+directory's working tree.
 
-Build (internal/build/engine.go) resolves LocalHeadCommit and clones fresh into a disposable workspace at exactly that commit before invoking the builder — it never reads or builds
-from the working tree directly. This means an uncommitted change to a package's PKGBUILD (a manual hand-edit, a half-finished local patch, or any operation that touches the file
-without committing it) has no effect on what would actually be built next. A "local version" read from disk can therefore disagree with what Build would actually produce — not a
-stylistic inconsistency, but a false signal about real application state.
+- **Review Pending:** read at `Review.UpstreamCommit` — the commit under
+  review, since HEAD may predate it.
+- **Every other state:** read at local `master` HEAD — the last merged
+  commit, and what the next Build uses.
 
-This mirrors the project's existing Git-as-source-of-truth pattern elsewhere in this document (Review compares master vs upstream/master by commit, not by file diff against an ambient
-working state; Approve/Reject records a commit, not a file snapshot). Local version resolution follows the same rule for consistency, and because Build already depends on it being
-true. What this means in practice:
+**Why:** Build clones local `master` HEAD into a disposable directory and
+never reads the working tree, so an uncommitted edit to a PKGBUILD has no
+effect on what is built. A local version read from disk could disagree
+with what Build would produce: a false signal about real state. An
+uncommitted edit has also not been through Review; reacting to it would
+mean reacting to unreviewed changes. So an uncommitted edit is, by design,
+invisible to every staleness and update check until it is committed.
 
-Any code that needs "does this package have a newer version upstream than what's locally curated" must resolve local version via:
-
-    provider.LocalHeadCommit(ctx, pkg) — the commit currently at local master.
-    provider.FileAtCommit(ctx, pkg, <commit>, "PKGBUILD") — the PKGBUILD content at that commit.
-    Parse the version from that content (never from a disk read of the file).
-
-This applies identically to:
-
-    Review-Pending packages — local version is read at review.UpstreamCommit (the commit the pending review is comparing against), not at HEAD, since the review hasn't been decided yet and HEAD may predate it.
-    Approved / Merged / Built / Confirmed / Rejected / Published packages — local version is read at local HEAD, since that is the last commit that was actually merged and is what the next Build would use.
-
-An uncommitted working-tree edit to a PKGBUILD is, by design, invisible to every staleness/update check until it is committed. This is intentional, not a gap: an uncommitted edit has
-not gone through Review, and treating it as live data would mean the tool reacts to unreviewed local mutations — the same category of thing "Automate mechanics, never automate trust"
-already guards against elsewhere in the lifecycle.
-
-##### Known consumers of this rule (keep in sync if more are added)
-
-    update CLI command (parseLocalMasterVersion, cmd/aur-curator/main.go) — implements this correctly today; the reference implementation for the pattern.
-    #219's bucket-2 AUR-staleness check in update — implements this correctly for the review-pending case (FileAtCommit against review.UpstreamCommit).
-    Dashboard's AUR Update card (deps.AUR.BulkCheck / internal/aurinfo) — currently reads disk directly, in violation of this rule; tracked as #231.
-
-Any future code that needs a package's local version must follow this rule from the start rather than re-deriving its own working-tree read. If a genuine need arises for working-tree
-state specifically (distinct from "local curated version"), it must be named and documented as a separate, explicitly different concept — not silently substituted for "local version"
-the way #231's bug did.
+Consumers: the `update` command (`parseLocalMasterVersion` and the
+review-pending check in `cmd/aur-curator/main.go`) and the Dashboard's AUR
+check (`aurinfo.NewGitLocalVersionResolver`, since #231). New code that
+needs a local version uses the same resolution. If working-tree state is
+ever genuinely needed, it is a separate, explicitly named concept — never
+substituted for "local version".
 
 ## Check (Consistency)
 

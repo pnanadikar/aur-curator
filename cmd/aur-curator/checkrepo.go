@@ -20,7 +20,7 @@ type lastSuccessGetter interface {
 	GetLastSuccess(pkg domain.PackageName) (*domain.Build, error)
 }
 
-// artifactGetter is the part of store.ArtifactStore checkRepository needs.
+// artifactGetter is the part of domain.ArtifactStore checkRepository needs.
 type artifactGetter interface {
 	Get(id domain.ArtifactID) (*domain.Artifact, error)
 }

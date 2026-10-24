@@ -24,6 +24,7 @@ documentation. For installing and using aur-curator, see the
 | `make run CONFIG=<path>` | Run from source against a config file. |
 | `make install` | Build and install to `~/.local/bin` (`PREFIX=` to change). |
 | `make test` | `go test ./...` |
+| `make test-race` | `go test -race ./...` (needs cgo; slower). |
 | `make lint` | `tools/tracecheck`, then `golangci-lint run ./...` |
 | `make vet` | `go vet ./...` |
 | `make fmt` | `gofmt -w` across `cmd/`, `internal/` and `tools/`. |
@@ -36,6 +37,9 @@ those, and they silently drop log fields.
 
 - `make build`, `make test` and `make lint` are clean.
 - New tests fail against the code before the fix, and pass after it.
+- `make test-race` is clean when the change touches goroutines,
+  `tea.Cmd` concurrency, or state shared between tests (for example
+  parallel subtests).
 - The change has been run by hand against real packages. Passing tests
   are necessary but not sufficient: many defects in this project have
   only shown up in manual runs, especially around the TUI and around
@@ -68,7 +72,7 @@ internal/build/         build engine (makepkg backend)
 internal/publish/       publishes artifacts to the local pacman repository
 internal/repodb/        reads the local pacman repository database
 internal/aurinfo/       AUR RPC queries for upstream versions
-internal/store/         store paths and the ArtifactStore interface
+internal/store/         store paths
 internal/store/json/    JSON implementations of the three stores
 
 TUI

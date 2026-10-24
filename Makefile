@@ -12,7 +12,7 @@ PREFIX ?= $(HOME)/.local
 VERSION := $(shell git describe --tags --match 'v[0-9]*' --dirty --always)
 VERSION_LDFLAG := -X 'github.com/pramod/aur-curator/internal/version.Version=$(VERSION)'
 
-.PHONY: help build debug-build install uninstall test-build test-ui test lint tracecheck vet vet-all run fmt clean
+.PHONY: help build debug-build install uninstall test-build test-ui test test-race lint tracecheck vet vet-all run fmt clean
 
 help:
 	@printf '%s\n' \
@@ -24,6 +24,7 @@ help:
 		'  test-build   Build to $(BIN_DEBUG) and run make test && make lint' \
 		'  test-ui      Run go test ./internal/ui/... -v' \
 		'  test         Run go test ./...' \
+		'  test-race    Run go test -race ./... (needs cgo: gcc from base-devel)' \
 		'  lint         Run tracecheck, then golangci-lint run ./...' \
 		'  tracecheck   Report trace.Log, activitylog.Log and procgroup.Run calls with unpaired key/value args' \
 		'  vet          Run go vet ./...' \
@@ -57,6 +58,9 @@ test-ui:
 
 test:
 	go test ./...
+
+test-race:
+	CGO_ENABLED=1 go test -race ./...
 
 lint: tracecheck
 	golangci-lint run ./...

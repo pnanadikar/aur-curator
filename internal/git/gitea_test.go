@@ -18,7 +18,7 @@ func TestCreateRepository(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"clone_url":"https://gitea.example.com/aur/yay.git"}`)
 	}))
 	defer ts.Close()
-	f := NewGiteaForge(ts.URL, "aur", "tok")
+	f := NewGiteaForge(ts.URL, "aur", "tok", "test")
 	url, err := f.CreateRepository(context.Background(), "yay")
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +38,7 @@ func TestCreateRepositoryMissingCloneURL(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"id":1,"name":"yay"}`)
 	}))
 	defer ts.Close()
-	f := NewGiteaForge(ts.URL, "aur", "tok")
+	f := NewGiteaForge(ts.URL, "aur", "tok", "test")
 	_, err := f.CreateRepository(context.Background(), "yay")
 	if err == nil {
 		t.Fatal("expected error for missing clone_url")

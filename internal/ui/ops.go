@@ -69,9 +69,12 @@ func (k OperationKind) Lane() Lane {
 
 // Operation represents a single unit of work queued for execution.
 type Operation struct {
-	ID       string
-	Kind     OperationKind
-	Pkg      domain.PackageName
+	ID   string
+	Kind OperationKind
+	Pkg  domain.PackageName
+	// ReviewID is the review an Analyze operation acts on; empty for
+	// other kinds (#399).
+	ReviewID domain.ReviewID
 	TraceCtx context.Context
 	Cancel   context.CancelFunc
 }

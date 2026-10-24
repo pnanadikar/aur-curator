@@ -2,7 +2,7 @@
 
 > Last updated: 2026-07-26
 > Status: Active
-> Companion docs: `risk-analysis.md` (severity tiers), `go-domain-structs.md`
+> Companion docs: `risk-analysis.md` (severity tiers), `domain.md`
 > § Finding, `sprints/s05-analyzers-policy.md` § Category Taxonomy,
 > `internal/git/types.go` (`GitDiff`/`FileDiff`, source of truth for the
 > structs referenced throughout this doc)
@@ -455,7 +455,7 @@ parser. Refinement is future work, not a Sprint 5 gate.
 - Category → Severity mapping is defined in `risk-analysis.md`,
   which is the canonical source for severity classification.
   This document specifies only analyzer detection behavior.
-- `Finding` struct shape: `go-domain-structs.md` § Finding.
+- `Finding` struct shape: `domain.md` § Finding.
 - `GitDiff`/`FileDiff`/`FileKind`: `internal/git/types.go` (source of
   truth — if that file changes, this doc's field references need to be
   re-verified, not assumed still accurate).

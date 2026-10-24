@@ -930,17 +930,11 @@ func (m PackageDetailModel) renderFindingsSummary() string {
 }
 
 func (m PackageDetailModel) isMergeEnabled() bool {
-	if m.review == nil || m.review.Status != domain.ReviewApproved {
-		return false
-	}
-	return m.commitsBehind > 0
+	return isMergeAvailable(m.lifecycleState())
 }
 
 func (m PackageDetailModel) isBuildEnabled() bool {
-	if m.review == nil || m.review.Status != domain.ReviewApproved {
-		return false
-	}
-	return m.isMerged
+	return isBuildAvailable(m.lifecycleState())
 }
 
 func (m PackageDetailModel) loadArtifactHistoryCmd() tea.Cmd {
@@ -1143,19 +1137,16 @@ func (m PackageDetailModel) actions() []widgets.Action {
 		gitReason = reasonNoGit
 	}
 
-	mergeReason := ""
+	mergeWhy := ""
 	if !m.isMergeEnabled() {
-		mergeReason = reasonNothingToMerge
-		if m.review == nil || m.review.Status != domain.ReviewApproved {
-			mergeReason = prereqApproved
-		}
+		mergeWhy = mergeReason(m.lifecycleState())
 	}
 
 	return []widgets.Action{
 		{Key: "ENTER", Label: "Open Review", Enabled: m.review != nil, Reason: reasonNoReview},
 		{Key: "^PgDn/^PgUp", Label: "Tabs", Enabled: true},
 		{Key: "F", Label: "Fetch", Enabled: m.deps.Git != nil, Reason: gitReason},
-		{Key: "M", Label: "Merge", Enabled: m.isMergeEnabled(), Reason: mergeReason},
+		{Key: "M", Label: "Merge", Enabled: m.isMergeEnabled(), Reason: mergeWhy},
 		{Key: "B", Label: "Build", Enabled: m.isBuildEnabled(), Reason: prereqMergedOrLater},
 		{Key: "C", Label: "Confirm", Enabled: m.isConfirmEnabled(), Reason: prereqBuilt},
 		{Key: "P", Label: "Publish", Enabled: m.isPublishEnabled(), Reason: prereqConfirmed},

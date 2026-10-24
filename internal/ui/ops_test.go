@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,6 +158,9 @@ type fakeGitProviderOps struct {
 	mergeCalls        atomic.Int32
 	mergeErr          error
 	mergeCommit       atomic.Value // last commit passed to Merge (string)
+	merged            bool         // IsMerged result (#406)
+	mergedErr         error
+	isMergedCommit    atomic.Value // last commit passed to IsMerged (string)
 }
 
 func (f *fakeGitProviderOps) Import(context.Context, domain.PackageName) error { return nil }
@@ -278,8 +282,9 @@ func (f *fakeGitProviderOps) LocalOnlyCommits(context.Context, domain.PackageNam
 func (f *fakeGitProviderOps) Metadata(context.Context, domain.PackageName) (*git.RepositoryMetadata, error) {
 	return &git.RepositoryMetadata{}, nil
 }
-func (f *fakeGitProviderOps) IsMerged(context.Context, domain.PackageName, string) (bool, error) {
-	return false, nil
+func (f *fakeGitProviderOps) IsMerged(_ context.Context, _ domain.PackageName, commit string) (bool, error) {
+	f.isMergedCommit.Store(commit)
+	return f.merged, f.mergedErr
 }
 
 type fakeReviewStoreOps struct {
@@ -307,8 +312,8 @@ func (f *fakeReviewStoreOps) Delete(domain.PackageName) error {
 
 type fakeAnalyzerManagerOps struct{}
 
-func (fakeAnalyzerManagerOps) Run(context.Context, *git.GitDiff) []domain.Finding {
-	return nil
+func (fakeAnalyzerManagerOps) Run(context.Context, *git.GitDiff) ([]domain.Finding, error) {
+	return nil, nil
 }
 
 func newTestReviewEngine(initial *domain.Review) (*review.Engine, *fakeGitProviderOps, *fakeReviewStoreOps) {
@@ -317,6 +322,14 @@ func newTestReviewEngine(initial *domain.Review) (*review.Engine, *fakeGitProvid
 	policyEngine := policy.NewEngine(domain.PolicyConfig{})
 	engine := review.NewEngine(git, store, fakeAnalyzerManagerOps{}, policyEngine)
 	return engine, git, store
+}
+
+func newTestReviewEngineWithGit(initial *domain.Review, git git.Provider) (*review.Engine, *fakeGitProviderOps, *fakeReviewStoreOps) {
+	store := &fakeReviewStoreOps{review: initial}
+	policyEngine := policy.NewEngine(domain.PolicyConfig{})
+	engine := review.NewEngine(git, store, fakeAnalyzerManagerOps{}, policyEngine)
+	fakeOps, _ := git.(*fakeGitProviderOps)
+	return engine, fakeOps, store
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +732,8 @@ func TestExecuteOperationDispatch(t *testing.T) {
 			if tt.needDep {
 				switch tt.kind {
 				case OpBuild:
-					app.deps.Git = &fakeGitProviderOps{}
+					// The reviewed commit is merged (#406).
+					app.deps.Git = &fakeGitProviderOps{merged: true}
 					app.deps.Reviews = review.NewEngine(nil, &fakeReviewStore{
 						review: &domain.Review{Status: domain.ReviewApproved},
 					}, nil, nil)
@@ -812,104 +826,63 @@ func TestExecuteOperationFetchSuccess(t *testing.T) {
 func TestExecuteOperationAnalyzeSuccess(t *testing.T) {
 	t.Parallel()
 
-	engine, git, store := newTestReviewEngine(nil)
-	app := App{deps: Dependencies{Git: git, Reviews: engine}}
+	stored := &domain.Review{ID: "yay@aaa", PackageName: "yay", UpstreamCommit: "aaa", Status: domain.ReviewPending, FindingsStatus: domain.FindingsNotRun}
+	engine, gp, store := newTestReviewEngine(stored)
+	app := App{deps: Dependencies{Git: gp, Reviews: engine}}
 
-	cmd := app.executeOperation(Operation{Kind: OpAnalyze, Pkg: "yay"})
+	cmd := app.executeOperation(Operation{ID: "yay", Kind: OpAnalyze, Pkg: "yay", ReviewID: "yay@aaa"})
 	msg := cmd()
 
-	if _, ok := msg.(msgs.OperationCompletedMsg); !ok {
+	completed, ok := msg.(msgs.OperationCompletedMsg)
+	if !ok {
 		t.Fatalf("expected msgs.OperationCompletedMsg, got %T", msg)
 	}
-	if store.review == nil {
-		t.Fatal("expected a review to have been created and saved")
+	if completed.OpID != "yay" {
+		t.Fatalf("OpID = %q, want %q", completed.OpID, "yay")
 	}
 	if store.review.FindingsStatus != domain.FindingsRun {
 		t.Fatalf("FindingsStatus = %q, want %q", store.review.FindingsStatus, domain.FindingsRun)
 	}
-}
-
-func TestExecuteOperationAnalyzeSkipsDecidedReview(t *testing.T) {
-	t.Parallel()
-
-	decided := &domain.Review{
-		PackageName:    "yay",
-		UpstreamCommit: "",
-		Status:         domain.ReviewApproved,
-		FindingsStatus: domain.FindingsRun,
+	if store.review.ID != "yay@aaa" {
+		t.Fatalf("stored review ID = %q, want %q (Analyze must not replace the review)", store.review.ID, "yay@aaa")
 	}
-	engine, git, _ := newTestReviewEngine(decided)
-	app := App{deps: Dependencies{Git: git, Reviews: engine}}
-
-	cmd := app.executeOperation(Operation{Kind: OpAnalyze, Pkg: "yay"})
-	msg := cmd()
-
-	completed, ok := msg.(msgs.OperationCompletedMsg)
-	if !ok {
-		t.Fatalf("expected msgs.OperationCompletedMsg (skip), got %T", msg)
-	}
-	reason, ok := completed.Result.(string)
-	if !ok || reason == "" {
-		t.Fatal("expected a non-empty skip reason in Result")
-	}
-	if git.fetchCalls.Load() != 1 {
-		t.Fatalf("Fetch should still run before the skip check — called %d times, want 1", git.fetchCalls.Load())
+	if got := gp.fetchCalls.Load(); got != 0 {
+		t.Fatalf("Fetch called %d times, want 0 (#399)", got)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// CMD-038 — OpFetch: UpstreamCommit before/after comparison
-// ---------------------------------------------------------------------------
-
-func TestExecuteOperationFetchUpToDate(t *testing.T) {
+// TestExecuteOperationAnalyzeReviewChanged: when the stored review is not
+// the one the screen showed, Analyze fails with *review.ReviewChangedError
+// and runs nothing (#399).
+func TestExecuteOperationAnalyzeReviewChanged(t *testing.T) {
 	t.Parallel()
 
-	git := &fakeGitProviderOps{upstreamCommit: "abc123"}
-	app := App{deps: Dependencies{Git: git}}
+	stored := &domain.Review{ID: "yay@bbb", PackageName: "yay", UpstreamCommit: "bbb", Status: domain.ReviewPending, FindingsStatus: domain.FindingsNotRun}
+	engine, gp, store := newTestReviewEngine(stored)
+	app := App{deps: Dependencies{Git: gp, Reviews: engine}}
 
-	cmd := app.executeOperation(Operation{Kind: OpFetch, Pkg: "yay"})
+	cmd := app.executeOperation(Operation{ID: "yay", Kind: OpAnalyze, Pkg: "yay", ReviewID: "yay@aaa"})
 	msg := cmd()
 
-	completed, ok := msg.(msgs.OperationCompletedMsg)
+	failed, ok := msg.(msgs.OperationFailedMsg)
 	if !ok {
-		t.Fatalf("expected msgs.OperationCompletedMsg, got %T", msg)
+		t.Fatalf("expected msgs.OperationFailedMsg, got %T", msg)
 	}
-	reason, ok := completed.Result.(string)
-	if !ok || reason != "Already up to date — no new upstream commits since last fetch" {
-		t.Fatalf("Result = %v (%T), want string 'Already up to date — no new upstream commits since last fetch'", completed.Result, completed.Result)
+	if failed.OpID != "yay" {
+		t.Fatalf("OpID = %q, want %q", failed.OpID, "yay")
 	}
-	if git.fetchCalls.Load() != 1 {
-		t.Fatalf("Fetch called %d times, want 1", git.fetchCalls.Load())
+	var rce *review.ReviewChangedError
+	if !errors.As(failed.Err, &rce) {
+		t.Fatalf("Err = %v, want *review.ReviewChangedError", failed.Err)
 	}
-}
-
-func TestExecuteOperationFetchHasUpstream(t *testing.T) {
-	t.Parallel()
-
-	git := &fakeGitProviderOpsDynamic{
-		fakeGitProviderOps: &fakeGitProviderOps{upstreamCommit: "abc123"},
-		beforeHash:         "abc123",
-		afterHash:          "def456",
+	if rce.Expected != "yay@aaa" || rce.Current.ID != "yay@bbb" {
+		t.Fatalf("Expected/Current = %q/%q, want %q/%q", rce.Expected, rce.Current.ID, "yay@aaa", "yay@bbb")
 	}
-	app := App{deps: Dependencies{Git: git}}
-
-	cmd := app.executeOperation(Operation{Kind: OpFetch, Pkg: "yay"})
-	msg := cmd()
-
-	completed, ok := msg.(msgs.OperationCompletedMsg)
-	if !ok {
-		t.Fatalf("expected msgs.OperationCompletedMsg, got %T", msg)
+	if store.review.FindingsStatus != domain.FindingsNotRun {
+		t.Fatalf("FindingsStatus = %q, want %q (nothing must run)", store.review.FindingsStatus, domain.FindingsNotRun)
 	}
-	reason, ok := completed.Result.(string)
-	if !ok || reason == "" {
-		t.Fatalf("Result = %q, want non-empty string indicating upstream change", reason)
-	}
-	want := "Upstream changed (refs: abc123 → def456)"
-	if reason != want {
-		t.Fatalf("Result = %q, want %q", reason, want)
-	}
-	if git.fetchCalls.Load() != 1 {
-		t.Fatalf("Fetch called %d times, want 1", git.fetchCalls.Load())
+	if got := gp.fetchCalls.Load(); got != 0 {
+		t.Fatalf("Fetch called %d times, want 0", got)
 	}
 }
 
@@ -951,47 +924,6 @@ func TestExecuteOperationFetchAfterErr(t *testing.T) {
 	}
 	if reason, ok := completed.Result.(string); ok && reason != "" {
 		t.Fatalf("Result = %q, want empty", reason)
-	}
-}
-
-func TestExecuteOperationFetchOverwritesTerminalReview(t *testing.T) {
-	t.Parallel()
-
-	seeded := &domain.Review{
-		PackageName:    "yay",
-		UpstreamCommit: "abc123",
-		Status:         domain.ReviewApproved,
-	}
-	engine, _, store := newTestReviewEngine(seeded)
-
-	fakeGit := &fakeGitProviderOpsFetchWithReview{
-		fakeGitProviderOps: &fakeGitProviderOps{upstreamCommit: "abc123"},
-		beforeHash:         "abc123",
-		afterHash:          "def456",
-		diffUpstreamCommit: "def456",
-	}
-	app := App{deps: Dependencies{Git: fakeGit, Reviews: engine}}
-
-	cmd := app.executeOperation(Operation{Kind: OpFetch, Pkg: "yay"})
-	msg := cmd()
-
-	completed, ok := msg.(msgs.OperationCompletedMsg)
-	if !ok {
-		t.Fatalf("expected msgs.OperationCompletedMsg, got %T", msg)
-	}
-	result, ok := completed.Result.(string)
-	if !ok || result == "" {
-		t.Fatalf("Result = %v (%T), want non-empty string", completed.Result, completed.Result)
-	}
-	want := "Upstream changed (refs: abc123 → def456)"
-	if result != want {
-		t.Fatalf("Result = %q, want %q", result, want)
-	}
-	if store.review == nil {
-		t.Fatal("expected a review to have been created/updated by InitiateReview")
-	}
-	if store.review.Status != domain.ReviewPending {
-		t.Fatalf("Review.Status = %q, want %q — InitiateReview should have overwritten terminal review", store.review.Status, domain.ReviewPending)
 	}
 }
 
@@ -1678,5 +1610,140 @@ func TestCommitMismatchPublish(t *testing.T) {
 	}
 	if pub.calls.Load() != 0 {
 		t.Errorf("publisher should not be called on commit mismatch, got %d calls", pub.calls.Load())
+	}
+}
+
+// TestExecuteOperationFetchReviewOutcomes covers what a TUI Fetch reports
+// and stores, decided from the stored review rather than from whether the
+// ref moved during this fetch (#405). "stuck" is the #405 case: upstream
+// moved before this fetch, so the fetch itself sees no movement.
+func TestExecuteOperationFetchReviewOutcomes(t *testing.T) {
+	t.Parallel()
+
+	const (
+		upToDate = "Already up to date — no new upstream commits since last fetch"
+		started  = "New upstream commit def456 — review started"
+		moved    = "Upstream changed (refs: abc123 → def456)"
+	)
+	stored := func(commit string, s domain.ReviewStatus) *domain.Review {
+		return &domain.Review{
+			ID:             domain.ReviewID("yay@" + commit),
+			PackageName:    "yay",
+			UpstreamCommit: commit,
+			Status:         s,
+		}
+	}
+
+	tests := []struct {
+		name       string
+		before     string
+		after      string
+		stored     *domain.Review
+		wantResult string
+		wantID     domain.ReviewID
+		wantCommit string
+		wantStatus domain.ReviewStatus
+	}{
+		{"up to date", "def456", "def456", stored("def456", domain.ReviewApproved), upToDate, "yay@def456", "def456", domain.ReviewApproved},
+		{"moved, no review stored", "abc123", "def456", nil, started, "yay@def456", "def456", domain.ReviewPending},
+		{"moved, approved at old commit", "abc123", "def456", stored("abc123", domain.ReviewApproved), started, "yay@def456", "def456", domain.ReviewPending},
+		{"moved, review already current", "abc123", "def456", stored("def456", domain.ReviewApproved), moved, "yay@def456", "def456", domain.ReviewApproved},
+		{"stuck, approved at old commit", "def456", "def456", stored("abc123", domain.ReviewApproved), started, "yay@def456", "def456", domain.ReviewPending},
+		{"stuck, rejected at old commit", "def456", "def456", stored("abc123", domain.ReviewRejected), started, "yay@def456", "def456", domain.ReviewPending},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fakeGit := &fakeGitProviderOpsFetchWithReview{
+				fakeGitProviderOps: &fakeGitProviderOps{upstreamCommit: tc.before},
+				beforeHash:         tc.before,
+				afterHash:          tc.after,
+				diffUpstreamCommit: tc.after,
+			}
+			engine, _, store := newTestReviewEngineWithGit(tc.stored, fakeGit)
+			app := App{deps: Dependencies{Git: fakeGit, Reviews: engine}}
+
+			msg := app.executeOperation(Operation{Kind: OpFetch, Pkg: "yay"})()
+
+			completed, ok := msg.(msgs.OperationCompletedMsg)
+			if !ok {
+				t.Fatalf("got %T, want msgs.OperationCompletedMsg", msg)
+			}
+			if got, _ := completed.Result.(string); got != tc.wantResult {
+				t.Fatalf("Result = %q, want %q", got, tc.wantResult)
+			}
+			if store.review == nil {
+				t.Fatal("no stored review after Fetch")
+			}
+			r := store.review
+			if r.ID != tc.wantID || r.UpstreamCommit != tc.wantCommit || r.Status != tc.wantStatus {
+				t.Fatalf("stored review = {ID %q, UpstreamCommit %q, Status %q}, want {ID %q, UpstreamCommit %q, Status %q}",
+					r.ID, r.UpstreamCommit, r.Status, tc.wantID, tc.wantCommit, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestExecuteOperationBuildGate406: Build requires the reviewed commit to be
+// merged, and does not care where upstream's tip is (#406).
+func TestExecuteOperationBuildGate406(t *testing.T) {
+	t.Parallel()
+
+	const reviewed = "upAAAAAAA1"
+	tests := []struct {
+		name          string
+		merged        bool
+		mergedErr     error
+		commitsBehind int
+		wantErr       string // "" = build runs
+	}{
+		{name: "merged, upstream ahead", merged: true, commitsBehind: 3},
+		{name: "merged, upstream level", merged: true, commitsBehind: 0},
+		{name: "not merged, nothing behind", merged: false, commitsBehind: 0,
+			wantErr: "build: pkg not yet merged (reviewed commit upAAAAA is not in master)"},
+		{name: "merge check fails", mergedErr: errors.New("boom"),
+			wantErr: "build: failed to check merge state for pkg: boom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gp := &fakeGitProviderOps{merged: tt.merged, mergedErr: tt.mergedErr, commitsBehind: tt.commitsBehind}
+			builder := &fakeBuilder{}
+			app := App{}
+			app.deps.Git = gp
+			app.deps.Reviews = review.NewEngine(nil, &fakeReviewStore{
+				review: &domain.Review{Status: domain.ReviewApproved, UpstreamCommit: reviewed},
+			}, nil, nil)
+			app.deps.BuildEngine = build.NewEngine(
+				builder,
+				&fakeBuildStore{},
+				&fakeArtifactStore{},
+				&fakeGitProviderOps{},
+				store.NewStorePaths(""),
+			)
+
+			msg := app.executeOperation(Operation{ID: "pkg", Kind: OpBuild, Pkg: "pkg"})()
+
+			if got, _ := gp.isMergedCommit.Load().(string); got != reviewed {
+				t.Fatalf("IsMerged asked about %q, want the reviewed commit %q", got, reviewed)
+			}
+			if tt.wantErr == "" {
+				if _, ok := msg.(msgs.OperationCompletedMsg); !ok {
+					t.Fatalf("got %#v, want OperationCompletedMsg", msg)
+				}
+				if builder.calls.Load() != 1 {
+					t.Fatalf("builder calls = %d, want 1", builder.calls.Load())
+				}
+				return
+			}
+			failed, ok := msg.(msgs.OperationFailedMsg)
+			if !ok || failed.Err == nil || failed.Err.Error() != tt.wantErr {
+				t.Fatalf("got %#v\nwant OperationFailedMsg %q", msg, tt.wantErr)
+			}
+			if builder.calls.Load() != 0 {
+				t.Fatalf("builder calls = %d, want 0 (refused)", builder.calls.Load())
+			}
+		})
 	}
 }

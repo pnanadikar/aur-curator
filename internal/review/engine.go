@@ -13,6 +13,30 @@ import (
 	"github.com/pramod/aur-curator/internal/trace"
 )
 
+// ReviewChangedError is returned by RunAnalyzers and RecordDecision when the
+// review stored for a package is not the review the caller is acting on —
+// usually because a newer upstream commit replaced it. When it is returned,
+// nothing has been run, saved or recorded (#399).
+type ReviewChangedError struct {
+	Package  domain.PackageName
+	Expected domain.ReviewID
+	Current  domain.Review // the review now stored
+}
+
+func (e *ReviewChangedError) Error() string {
+	return fmt.Sprintf("review for %s changed while it was being viewed: expected %s, stored %s",
+		e.Package, e.Expected, e.Current.ID)
+}
+
+// checkReviewID refuses when the stored review is not the one the caller
+// expects (#399).
+func checkReviewID(name domain.PackageName, expected domain.ReviewID, stored *domain.Review) error {
+	if stored.ID != expected {
+		return &ReviewChangedError{Package: name, Expected: expected, Current: *stored}
+	}
+	return nil
+}
+
 // Engine coordinates the package review workflow. It calls into
 // AnalyzerManager and Policy Engine as collaborators — it does not
 // contain analyzer or policy logic itself (interfaces.md § Review
@@ -132,9 +156,21 @@ func (e *Engine) InitiateReview(ctx context.Context, pkgName domain.PackageName)
 // Fresh Finding IDs are assigned on every call, even a re-run over an
 // unchanged diff: Findings are fully replaced each time, so there is no
 // prior ID to preserve and no cross-run identity requirement.
-func (e *Engine) RunAnalyzers(ctx context.Context, pkgName domain.PackageName) (*domain.Review, error) {
+//
+// expected is the ID of the review the caller is acting on; if the stored
+// review has a different ID, a *ReviewChangedError is returned and nothing
+// is run or recorded.
+//
+// If any analyzer fails, or ctx is done by the time the analyzers finish,
+// an error is returned and nothing is saved: Findings and FindingsStatus
+// keep their previous values (#410).
+func (e *Engine) RunAnalyzers(ctx context.Context, pkgName domain.PackageName, expected domain.ReviewID) (*domain.Review, error) {
 	r, err := e.reviews.Get(pkgName)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := checkReviewID(pkgName, expected, r); err != nil {
 		return nil, err
 	}
 
@@ -147,7 +183,17 @@ func (e *Engine) RunAnalyzers(ctx context.Context, pkgName domain.PackageName) (
 		return nil, err
 	}
 
-	findings := e.analyzers.Run(ctx, diff)
+	// A failed analyzer or a cancelled run saves nothing: storing what
+	// did finish as FindingsRun would show a failed analyzer as one
+	// that found nothing (#410, domain.md § FindingsStatus).
+	findings, err := e.analyzers.Run(ctx, diff)
+	if err != nil {
+		return nil, fmt.Errorf("analysis of %s not saved: %w", pkgName, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("analysis of %s not saved: %w", pkgName, err)
+	}
+
 	for i := range findings {
 		findings[i].ReviewID = r.ID
 		findings[i].ID = domain.NewFindingID()
@@ -172,12 +218,17 @@ func (e *Engine) RunAnalyzers(ctx context.Context, pkgName domain.PackageName) (
 // stays nil — there is nothing to assess, and computing one anyway would
 // misrepresent "never analyzed" as "analyzed, found nothing", the exact
 // collapse FindingsStatus exists to prevent.
+//
+// expected is the ID of the review the caller is acting on; if the stored
+// review has a different ID, a *ReviewChangedError is returned and nothing
+// is run or recorded.
 func (e *Engine) RecordDecision(
 	ctx context.Context,
 	pkgName domain.PackageName,
 	outcome domain.ReviewStatus,
 	rationale string,
 	notes string,
+	expected domain.ReviewID,
 ) (*domain.Review, error) {
 	// ctx is unused: Policy Engine's Assess is a pure, synchronous
 	// computation with no I/O, so nothing here needs it. Kept in the
@@ -191,6 +242,10 @@ func (e *Engine) RecordDecision(
 
 	r, err := e.reviews.Get(pkgName)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := checkReviewID(pkgName, expected, r); err != nil {
 		return nil, err
 	}
 
@@ -230,65 +285,106 @@ func (e *Engine) Policy() policy.Engine {
 	return e.policy
 }
 
-// FetchResult captures what FetchAndReview observed after fetching.
+// FetchResult captures what FetchAndReview observed and did.
 type FetchResult struct {
-	Changed             bool   // true when upstream changed and InitiateReview was called
-	Before              string // upstream commit before fetch (empty if not read)
-	After               string // upstream commit after fetch (empty if not read)
-	EmptyResult         bool   // true when Result should be omitted (beforeErr/afterErr)
-	ForceInitiateCalled bool   // true when ForceInitiateReview was set and InitiateReview was called
+	Changed       bool   // upstream/master moved during this fetch
+	Before        string // upstream commit before the fetch (empty if not read)
+	After         string // upstream commit after the fetch (empty if not read)
+	EmptyResult   bool   // a commit read failed; no review step ran
+	ReviewStarted bool   // a new review replaced the stored one (or none existed)
+	ReviewCommit  string // upstream commit of the current review after the review step; empty if no review step ran
 }
 
-// FetchAndReview runs a git fetch for pkg and, if the upstream commit
-// changed, initiates a new Pending review. It returns a FetchResult
-// describing what happened and an error only when the fetch itself
-// failed.
+// FetchAndReview fetches upstream for pkg and, when reviews is non-nil,
+// makes sure the stored review covers the current upstream/master: it
+// calls InitiateReview, which starts a new Pending review whenever the
+// stored review's upstream commit differs from upstream/master (or no
+// review exists) and otherwise leaves the stored review unchanged. The
+// decision is made from the stored review, not from whether the ref moved
+// during this fetch, so it also covers commits fetched earlier — by the
+// update command or a git fetch outside aur-curator (#405).
 //
-// If ForceInitiateReview is true and reviews is non-nil, InitiateReview
-// is called unconditionally regardless of whether upstream moved. This
-// is intended for callers (e.g. the update command's bucket-2 confirmed
-// path) that have already determined the review is stale by an
-// independent check and want InitiateReview to fire even when the local
-// ref already points at the latest upstream commit.
+// If reviews is nil, no review step runs. It returns an error only when
+// the fetch, the review read, or InitiateReview fails.
 //
-// If reviews is nil the review-initiation step is skipped.
+// The whole sequence runs under git.GitTimeout (#409); cancelling ctx
+// still stops it at once. An error caused by that timeout says so.
 //
-// This function is the shared core of the Fetch operation, callable
-// from both the TUI (app.go:OpFetch) and the update CLI command.
-func FetchAndReview(ctx context.Context, g git.Provider, reviews *Engine, pkg domain.PackageName, forceInitiate bool) (FetchResult, error) {
+// This function is the shared core of the Fetch operation, called from
+// the TUI (app.go, OpFetch) and the update command.
+func FetchAndReview(ctx context.Context, g git.Provider, reviews *Engine, pkg domain.PackageName) (FetchResult, error) {
+	return fetchAndReview(ctx, g, reviews, pkg, git.GitTimeout)
+}
+
+// fetchAndReview is FetchAndReview with the timeout as a parameter, so
+// tests can use a short one.
+func fetchAndReview(ctx context.Context, g git.Provider, reviews *Engine, pkg domain.PackageName, timeout time.Duration) (FetchResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	// timedOut labels err when this function's own deadline caused it —
+	// not a cancel or a deadline of the caller's ctx.
+	timedOut := func(err error) error {
+		if parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("fetch %s: timed out after %v: %w", pkg, timeout, err)
+		}
+		return err
 	}
 
 	before, beforeErr := g.UpstreamCommit(ctx, pkg)
 	if err := g.Fetch(ctx, pkg); err != nil {
-		return FetchResult{}, err
+		return FetchResult{}, timedOut(err)
 	}
-
 	after, afterErr := g.UpstreamCommit(ctx, pkg)
+
+	// A commit read that failed because this function's time ran out is
+	// a timeout, not an empty result.
+	for _, err := range []error{beforeErr, afterErr} {
+		if err != nil && parent.Err() == nil && ctx.Err() != nil {
+			return FetchResult{}, timedOut(err)
+		}
+	}
 
 	if beforeErr != nil || afterErr != nil {
 		trace.Log(ctx, "handoff", "to", "store", "from", "git", "via", "UpstreamCommit", "pkg", pkg)
 		return FetchResult{EmptyResult: true}, nil
 	}
 
-	if before == after && !forceInitiate {
-		trace.Log(ctx, "handoff", "to", "store", "from", "git", "via", "UpstreamCommit", "pkg", pkg, "result", "Nothing upstream")
-		return FetchResult{}, nil
+	res := FetchResult{Changed: before != after, Before: before, After: after}
+
+	if reviews == nil {
+		trace.Log(ctx, "handoff", "to", "store", "from", "git", "via", "Fetch", "pkg", pkg,
+			"before", before, "after", after, "result", "no review step")
+		return res, nil
 	}
 
-	if reviews != nil {
-		_, err := reviews.InitiateReview(ctx, pkg)
-		if err != nil {
-			return FetchResult{}, err
-		}
+	var priorID domain.ReviewID
+	stored, err := reviews.GetReview(ctx, pkg)
+	switch {
+	case err == nil:
+		priorID = stored.ID
+	case errors.Is(err, domain.ErrNotFound):
+		// no review yet; InitiateReview creates one
+	default:
+		return FetchResult{}, timedOut(err)
 	}
 
-	if forceInitiate {
-		trace.Log(ctx, "handoff", "to", "store", "from", "git+reviews", "via", "Fetch+ForceInitiateReview", "pkg", pkg, "result", fmt.Sprintf("Forced InitiateReview (%s -> %s)", before, after))
-		return FetchResult{ForceInitiateCalled: true, Before: before, After: after}, nil
+	r, err := reviews.InitiateReview(ctx, pkg)
+	if err != nil {
+		return FetchResult{}, timedOut(err)
 	}
+	res.ReviewStarted = r.ID != priorID
+	res.ReviewCommit = r.UpstreamCommit
 
-	trace.Log(ctx, "handoff", "to", "store", "from", "git+reviews", "via", "Fetch+InitiateReview", "pkg", pkg, "result", fmt.Sprintf("Upstream changed (%s -> %s)", before, after))
-	return FetchResult{Changed: true, Before: before, After: after}, nil
+	result := "review unchanged"
+	if res.ReviewStarted {
+		result = "review started"
+	}
+	trace.Log(ctx, "handoff", "to", "store", "from", "git+reviews", "via", "Fetch", "pkg", pkg,
+		"before", before, "after", after, "result", result)
+	return res, nil
 }

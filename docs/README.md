@@ -57,7 +57,7 @@ The remaining canonical documents build on this foundation:
 | --- | --- | --- | --- |
 | `product/` | Canonical | `prd.md`, `roadmap.md` | Vision, scope, phased plan |
 | `domain/` | Canonical | `domain.md`, `architecture.md`, `interfaces.md`, `workflow.md`, `analyzer-specs.md`, `risk-analysis.md`, `go-domain-structs.md` | The domain and architectural contract — entities, lifecycle, workflows, analyzer behaviour, interface responsibilities and Go struct mapping |
-| `app-contract/` | Canonical | `composition-root.md`, `developer-guide.md` | Application composition and Bubble Tea implementation architecture (composition root, dependency wiring, operations queue, message flow) |
+| `app-contract/` | Canonical | `developer-guide.md` | Application composition and Bubble Tea implementation architecture (composition root, dependency wiring, operations queue, message flow) |
 | `ux/` | Canonical | `ui-overview.md`, `ui-implementation.md`, `tui-dashboard-wireframe.md`, `tui-package-details.md`, `tui-review.md` | UI information architecture, implementation architecture and screen-level wireframes |
 | `archive/` | — | Superseded docs, kept for history (e.g. `design.md`) | Not authoritative; do not implement from these |
 | `screen-packets/` | Derived | One file per UI screen | Self-contained implementation spec for a local model implementing one screen |

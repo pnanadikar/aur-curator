@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,8 +11,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	aurlog "github.com/pramod/aur-curator/internal/activitylog"
+	"github.com/pramod/aur-curator/internal/aurinfo"
 	"github.com/pramod/aur-curator/internal/debug"
 	"github.com/pramod/aur-curator/internal/domain"
+	"github.com/pramod/aur-curator/internal/errorlog"
 	"github.com/pramod/aur-curator/internal/git"
 	"github.com/pramod/aur-curator/internal/overlay"
 	"github.com/pramod/aur-curator/internal/review"
@@ -64,6 +67,14 @@ type ReviewScreen struct {
 	// helpOpen shows the full action help in place of the compact bar
 	// (tui-package-details.md § Action Bar Convention).
 	helpOpen bool
+
+	// pendingRefusal is the kind ("approve", "reject", or an operation
+	// kind) of an action the engine refused because the stored review
+	// changed. The next reload shows it as the opFailure banner (#399).
+	pendingRefusal string
+	// showFindingsAfterLoad switches to the Findings tab on the next
+	// reload, after a completed analysis (#399).
+	showFindingsAfterLoad bool
 }
 
 // NewReviewScreen constructs the Review screen: diff rendering, the
@@ -103,7 +114,7 @@ func NewReviewScreen(pkgName domain.PackageName, gitProvider git.Provider, store
 			key.WithHelp("^pgup/^←", "Prev Tab"),
 		),
 		backKey: key.NewBinding(
-			key.WithKeys("esc", "ctrl+c"),
+			key.WithKeys("esc"),
 			key.WithHelp("esc", "Back"),
 		),
 		analyzeKey: key.NewBinding(
@@ -148,9 +159,42 @@ func (m ReviewScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case reviewLoadedMsg:
+		prev := m.review
+		wasChanged := m.changed
 		m.applyLoadedReview(msg)
-		return m, nil
+		refused := m.pendingRefusal
+		showFindings := m.showFindingsAfterLoad
+		m.pendingRefusal = ""
+		m.showFindingsAfterLoad = false
+		if msg.err != nil || prev == nil {
+			return m, nil
+		}
+		// A reload after an operation or a refusal (#399): keep the
+		// changed flag for Back, and say what happened.
+		m.changed = wasChanged
+		var cmd tea.Cmd
+		switch {
+		case refused != "":
+			m.opFailure = &opFailure{kind: refused, err: errors.New(reviewChangedText(msg.upstreamVersion, m.review.UpstreamCommit))}
+		case m.review.ID != prev.ID:
+			text := replacedNoticeText(prev.UpstreamCommit, m.review.UpstreamCommit)
+			cmd = func() tea.Msg { return msgs.ToastMsg{Text: text} }
+		case showFindings && m.review.FindingsStatus == domain.FindingsRun && m.tabs.Active().Label != "Findings":
+			m.tabs.SetActive(4)
+		}
+		m.syncLayout()
+		return m, cmd
 	case reviewSavedMsg:
+		var rce *review.ReviewChangedError
+		if msg.err != nil && errors.As(msg.err, &rce) {
+			// Refused: nothing was recorded. Stay on this screen and show
+			// the review that is stored now (#399).
+			trace.Log(msg.traceCtx, "handoff", "to", "reviewSavedMsg", "status", "refused", "pkg", m.pkgName)
+			m.closeModal()
+			m.changed = true
+			m.pendingRefusal = msg.event
+			return m, m.loadReviewCmd()
+		}
 		if msg.review != nil {
 			trace.Log(msg.traceCtx, "handoff", "to", "reviewSavedMsg", "status", msg.review.Status, "pkg", m.pkgName)
 		}
@@ -188,31 +232,35 @@ func (m ReviewScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Sequence(cmds...)
 	case msgs.OperationCompletedMsg:
-		if msg.OpID == string(m.pkgName) {
-			m.loading = false
-			m.opFailure = nil
-			if review, ok := msg.Result.(*domain.Review); ok && review != nil {
-				m.review = review
-				m.changed = true
-				m.findingsPane.SetContent(m.renderFindingsContent())
-				if review.FindingsStatus == domain.FindingsRun &&
-					m.tabs.Active().Label != "Findings" {
-					m.tabs.SetActive(4)
-				}
-			}
-			m.syncLayout()
+		if msg.OpID != string(m.pkgName) {
+			return m, nil
 		}
-		return m, nil
+		m.loading = false
+		m.opFailure = nil
+		m.changed = true
+		// Show what is stored, not msg.Result: the operation may have
+		// replaced the review this screen was showing (#399).
+		_, analyzed := msg.Result.(*domain.Review)
+		m.showFindingsAfterLoad = analyzed
+		m.syncLayout()
+		return m, m.loadReviewCmd()
 	case msgs.OperationFailedMsg:
-		if msg.OpID == string(m.pkgName) {
-			m.loading = false
-			m.opFailure = &opFailure{
-				kind: msg.Kind,
-				err:  msg.Err,
-			}
-			m.syncLayout()
+		if msg.OpID != string(m.pkgName) {
+			return m, nil
 		}
-		return m, nil
+		m.loading = false
+		m.opFailure = &opFailure{
+			kind: msg.Kind,
+			err:  msg.Err,
+		}
+		m.changed = true
+		var rce *review.ReviewChangedError
+		if errors.As(msg.Err, &rce) {
+			m.pendingRefusal = msg.Kind
+		}
+		m.syncLayout()
+		// A failed operation may still have replaced the review (#399).
+		return m, m.loadReviewCmd()
 	}
 
 	if m.modal != nil {
@@ -520,8 +568,13 @@ func (m ReviewScreen) renderFindingsContent() string {
 func (m ReviewScreen) runAnalyzersCmd() tea.Cmd {
 	ctx := trace.Start(context.Background(), "analyze")
 	trace.Log(ctx, "key", "action", "fired", "op", "analyze", "pkg", m.pkgName)
+	// Analyze acts on the review this screen shows (#399).
+	var reviewID domain.ReviewID
+	if m.review != nil {
+		reviewID = m.review.ID
+	}
 	return func() tea.Msg {
-		return msgs.AnalyzeRequestedMsg{Pkg: m.pkgName, TraceCtx: ctx}
+		return msgs.AnalyzeRequestedMsg{Pkg: m.pkgName, ReviewID: reviewID, TraceCtx: ctx}
 	}
 }
 
@@ -532,6 +585,9 @@ func (m ReviewScreen) runAnalyzersCmd() tea.Cmd {
 // Review — that is the exclusive role of the explicit F Fetch action.
 func (m ReviewScreen) loadReviewCmd() tea.Cmd {
 	ctx := context.Background()
+	// After a refusal, the banner names the version now under review
+	// (#399); read it only then.
+	refused := m.pendingRefusal != ""
 	return func() tea.Msg {
 
 		review, err := m.engine.EnsureReview(ctx, m.pkgName)
@@ -544,9 +600,21 @@ func (m ReviewScreen) loadReviewCmd() tea.Cmd {
 			return reviewLoadedMsg{err: err}
 		}
 
+		var version string
+		if refused {
+			// Best effort: a version that cannot be read leaves the
+			// banner without one; it never fails the load.
+			if raw, err := m.git.FileAtCommit(ctx, m.pkgName, review.UpstreamCommit, "PKGBUILD"); err == nil {
+				if v, unknown := aurinfo.ExtractFullVersion(raw); !unknown {
+					version = v
+				}
+			}
+		}
+
 		return reviewLoadedMsg{
-			diff:   *diff,
-			review: review,
+			diff:            *diff,
+			review:          review,
+			upstreamVersion: version,
 		}
 	}
 }
@@ -617,28 +685,40 @@ func (m *ReviewScreen) showActiveTabFiles() {
 	m.diffPane.GotoTop()
 }
 
-func (m ReviewScreen) saveReviewCmd(review *domain.Review) tea.Cmd {
+func (m ReviewScreen) saveReviewCmd(decided *domain.Review) tea.Cmd {
 	ctx := m.traceCtx
+	// The decision applies only to the review this screen shows (#399).
+	var expected domain.ReviewID
+	if m.review != nil {
+		expected = m.review.ID
+	}
+	event := "reject"
+	if decided.Status == domain.ReviewApproved {
+		event = "approve"
+	}
 	return func() tea.Msg {
-		trace.Log(ctx, "store", "op", "RecordDecision", "status", review.Status, "pkg", m.pkgName)
+		trace.Log(ctx, "store", "op", "RecordDecision", "status", decided.Status, "pkg", m.pkgName)
 		r, err := m.engine.RecordDecision(
 			ctx,
 			m.pkgName,
-			review.Status,
-			review.Rationale,
-			review.ReviewerNotes,
+			decided.Status,
+			decided.Rationale,
+			decided.ReviewerNotes,
+			expected,
 		)
 		if err != nil {
-			return reviewSavedMsg{err: err, traceCtx: ctx}
+			var rce *review.ReviewChangedError
+			if errors.As(err, &rce) {
+				// Logged like a refused Confirm/Publish (#399).
+				_ = aurlog.Log(ctx, m.config.ActivityLogPath, event, string(m.pkgName), "status", "failed", "error", err.Error())
+				_ = errorlog.Log(ctx, m.config.RootPath, event, fmt.Sprintf("%q: %s", m.pkgName, err.Error()))
+			}
+			return reviewSavedMsg{err: err, event: event, traceCtx: ctx}
 		}
 
-		event := "reject"
-		if r.Status == domain.ReviewApproved {
-			event = "approve"
-		}
 		_ = aurlog.Log(ctx, m.config.ActivityLogPath, event, string(m.pkgName), "comment", decisionComment(r))
 
-		return reviewSavedMsg{review: r, traceCtx: ctx}
+		return reviewSavedMsg{review: r, event: event, traceCtx: ctx}
 	}
 }
 
@@ -666,6 +746,23 @@ func reviewRangeLabel(diff git.GitDiff) string {
 		base = shortSHA(diff.BaseCommit)
 	}
 	return base + " → " + shortSHA(diff.UpstreamCommit)
+}
+
+// replacedNoticeText is the toast shown when a reload brings a different
+// review than the one on screen (#399).
+func replacedNoticeText(oldCommit, newCommit string) string {
+	return fmt.Sprintf("A new upstream commit arrived (%s → %s). This review was replaced; review the new changes.",
+		shortSHA(oldCommit), shortSHA(newCommit))
+}
+
+// reviewChangedText is the banner text after the engine refused an
+// analysis or decision because the stored review changed (#399).
+func reviewChangedText(version, commit string) string {
+	now := shortSHA(commit)
+	if version != "" {
+		now = version + ", " + now
+	}
+	return fmt.Sprintf("The review changed while you were viewing it (now %s). Nothing was recorded. The screen has been reloaded — review the new changes and decide again.", now)
 }
 
 func shortSHA(value string) string {

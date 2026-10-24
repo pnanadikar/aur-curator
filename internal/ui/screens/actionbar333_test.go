@@ -74,9 +74,14 @@ func TestDashboardActionReasons(t *testing.T) {
 			t.Errorf("%s: enabled %v reason %q, want disabled %q", k, a.Enabled, a.Reason, want)
 		}
 	}
-	approved := dashboardWith(lifecycle.Approved) // no commits behind
-	if a := actionByKey(t, approved.actions(), "M"); a.Enabled || a.Reason != reasonNothingToMerge {
-		t.Errorf("Approved, nothing behind: Merge %+v, want %q", a, reasonNothingToMerge)
+	// Merge follows the state alone, not commits behind upstream (#406).
+	approved := dashboardWith(lifecycle.Approved) // no commits-behind data
+	if a := actionByKey(t, approved.actions(), "M"); !a.Enabled {
+		t.Errorf("Approved: Merge %+v, want enabled", a)
+	}
+	merged := dashboardWith(lifecycle.Merged)
+	if a := actionByKey(t, merged.actions(), "M"); a.Enabled || a.Reason != reasonNothingToMerge {
+		t.Errorf("Merged: Merge %+v, want disabled %q", a, reasonNothingToMerge)
 	}
 	empty := NewDashboardModel(deps.Dependencies{})
 	for _, k := range []string{"ENTER", "M", "F", "B", "C", "P"} {

@@ -9,14 +9,13 @@ import (
 	"github.com/pramod/aur-curator/internal/build"
 	"github.com/pramod/aur-curator/internal/deps"
 	"github.com/pramod/aur-curator/internal/domain"
-	"github.com/pramod/aur-curator/internal/store"
 	"github.com/pramod/aur-curator/internal/theme"
 )
 
 // fakeArtifactStore is a minimal ArtifactStore whose GetArtifactsByPackage
 // returns a configured slice and error.
 type fakeArtifactStore struct {
-	store.ArtifactStore
+	domain.ArtifactStore
 	arts []domain.Artifact
 	err  error
 }

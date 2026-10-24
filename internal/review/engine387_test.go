@@ -71,7 +71,7 @@ func TestRunAnalyzersUsesStoredRange387(t *testing.T) {
 	g := &fakeGitProvider{diff: &git.GitDiff{BaseCommit: "base1", UpstreamCommit: "up1"}}
 	e := NewEngine(g, store, &fakeAnalyzerManager{}, &fakePolicyEngine{})
 
-	if _, err := e.RunAnalyzers(context.Background(), "yay"); err != nil {
+	if _, err := e.RunAnalyzers(context.Background(), "yay", "yay@up1"); err != nil {
 		t.Fatal(err)
 	}
 	if g.reviewDiffCalls != 1 || g.reviewDiffBase != "base1" || g.reviewDiffUpstream != "up1" {

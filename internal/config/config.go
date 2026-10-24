@@ -9,6 +9,21 @@ import (
 	"github.com/pramod/aur-curator/internal/domain"
 )
 
+// giteaTokenEnv is the environment variable that overrides the config
+// file's giteaToken key.
+const giteaTokenEnv = "AUR_CURATOR_GITEA_TOKEN"
+
+// GiteaTokenSource says where Load takes the Gitea token from for the
+// config file at path, for error messages (#400): the environment
+// variable when it is set, otherwise the file's giteaToken key — the same
+// precedence Load applies. It never returns the token itself.
+func GiteaTokenSource(path string) string {
+	if os.Getenv(giteaTokenEnv) != "" {
+		return giteaTokenEnv + " (environment)"
+	}
+	return "giteaToken in " + path
+}
+
 // Load reads and validates the workspace config file at path, applying
 // GiteaToken's env-var precedence and the mandatory/optional rules
 // below.
@@ -75,7 +90,7 @@ func Load(path string) (domain.WorkspaceConfig, error) {
 	}
 
 	// Resolve GiteaToken: env var wins over file key.
-	if envToken := os.Getenv("AUR_CURATOR_GITEA_TOKEN"); envToken != "" {
+	if envToken := os.Getenv(giteaTokenEnv); envToken != "" {
 		cfg.GiteaToken = domain.Secret(envToken)
 	} else if cfg.GiteaToken != "" {
 		// Warn if file is group/world-readable.
@@ -83,7 +98,7 @@ func Load(path string) (domain.WorkspaceConfig, error) {
 			fmt.Fprintf(os.Stderr, "config: warning: giteaToken file %s may be readable by other users\n", path)
 		}
 	} else {
-		return domain.WorkspaceConfig{}, fmt.Errorf("config: giteaToken is required — set AUR_CURATOR_GITEA_TOKEN or the giteaToken key in %s", path)
+		return domain.WorkspaceConfig{}, fmt.Errorf("config: giteaToken is required — set %s or the giteaToken key in %s", giteaTokenEnv, path)
 	}
 
 	// Defaults for optional fields.

@@ -104,8 +104,8 @@ func TestImportForgeFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if strings.Contains(err.Error(), "already been created") {
-		t.Fatalf("forge failure should not claim a repository was created, got: %s", err.Error())
+	if strings.Contains(err.Error(), "Before retrying") {
+		t.Fatalf("forge failure should not give cleanup guidance, got: %s", err.Error())
 	}
 }
 
@@ -121,8 +121,8 @@ func TestImportRepoPathFailure(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "already been created") {
-		t.Fatalf("expected cleanup guidance since the Gitea repo was created, got: %s", msg)
+	if !strings.Contains(msg, "Before retrying, delete the Gitea repository https://gitea.example.com/aur/yay.git.") {
+		t.Fatalf("expected cleanup guidance naming the Gitea repo, got: %s", msg)
 	}
 	if !strings.Contains(msg, "create Gitea repository") {
 		t.Fatalf("expected completed steps to mention Gitea repository creation, got: %s", msg)
@@ -267,8 +267,8 @@ func TestImportPackageNotFound(t *testing.T) {
 		t.Fatalf("expected ErrPackageNotFound, got: %v", err)
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "already been created") {
-		t.Fatal("package not found should not mention Gitea repository creation")
+	if strings.Contains(msg, "Before retrying") {
+		t.Fatal("package not found should not give cleanup guidance")
 	}
 }
 

@@ -25,6 +25,38 @@ type importStep struct {
 	dir  string
 	args []string
 	err  error
+	// createsDir marks the step that creates the local clone directory,
+	// so cleanup guidance names it once the step has run (#401).
+	createsDir bool
+}
+
+// importCleanup records what a failed Import has left behind, so the
+// failure message can say what to clean up before retrying (#401,
+// workflow.md § Partial Import Failure).
+type importCleanup struct {
+	giteaRepo    string // clone URL of the Gitea repository created; "" if none
+	localDir     string // local clone directory; "" if none
+	localPartial bool   // localDir may hold a partial clone (the clone was interrupted)
+}
+
+// guidance returns what to clean up before retrying, or "" if nothing
+// was left behind.
+func (c importCleanup) guidance() string {
+	var parts []string
+	if c.giteaRepo != "" {
+		parts = append(parts, "delete the Gitea repository "+c.giteaRepo)
+	}
+	if c.localDir != "" {
+		if c.localPartial {
+			parts = append(parts, "remove the local directory "+c.localDir+" if it exists (the clone was interrupted)")
+		} else {
+			parts = append(parts, "remove the local directory "+c.localDir)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Before retrying, " + strings.Join(parts, " and ") + "."
 }
 
 // Import creates and initializes a managed repository for an AUR package.
@@ -41,42 +73,47 @@ func (p *provider) Import(ctx context.Context, packageName domain.PackageName) e
 	ctx = trace.Start(ctx, "import")
 
 	var completed []string
+	var cleanup importCleanup
 
-	if err := p.checkAURPackageExists(ctx, packageName); err != nil {
+	// fail reports a failed step: the step line on stdout, an errors.log
+	// entry, and the returned error — a timeout error if the Import
+	// deadline caused it, otherwise importFailure with sentinel. Every
+	// failure path goes through here, so none skips the log (#401).
+	fail := func(step string, sentinel, err error) error {
 		if isDeadlineExceeded(err) {
-			_, _ = fmt.Fprintf(os.Stdout, "verify %q exists on AUR ... timed out\n", packageName)
-			return importTimedOut(string(packageName), completed, time.Since(importStart))
+			_, _ = fmt.Fprintf(os.Stdout, "%s ... timed out\n", step)
+			elapsed := time.Since(importStart)
+			p.logFailure(ctx, packageName, completed, cleanup, fmt.Errorf("%s timed out after %v: %w", step, elapsed.Round(time.Millisecond), err))
+			return importTimedOut(string(packageName), completed, elapsed, cleanup)
 		}
-		p.logFailure(ctx, packageName, completed, err)
-		_, _ = fmt.Fprintf(os.Stdout, "verify %q exists on AUR ... failed\n", packageName)
-		return err
+		p.logFailure(ctx, packageName, completed, cleanup, err)
+		_, _ = fmt.Fprintf(os.Stdout, "%s ... failed\n", step)
+		if sentinel == nil {
+			return err
+		}
+		return importFailure(string(packageName), sentinel, err, completed, cleanup)
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "verify %q exists on AUR ... done\n", packageName)
+
+	verifyStep := fmt.Sprintf("verify %q exists on AUR", packageName)
+	if err := p.checkAURPackageExists(ctx, packageName); err != nil {
+		// checkAURPackageExists already names the package and the cause.
+		return fail(verifyStep, nil, err)
+	}
+	_, _ = fmt.Fprintf(os.Stdout, "%s ... done\n", verifyStep)
 	trace.Log(ctx, "handoff", "to", "forge", "from", "aur", "via", "checkAURPackageExists", "pkg", packageName)
 
 	cloneURL, err := p.forge.CreateRepository(ctx, string(packageName))
 	if err != nil {
-		if isDeadlineExceeded(err) {
-			_, _ = fmt.Fprintf(os.Stdout, "create Gitea repository ... timed out\n")
-			return importTimedOut(string(packageName), completed, time.Since(importStart))
-		}
-		p.logFailure(ctx, packageName, completed, err)
-		_, _ = fmt.Fprintf(os.Stdout, "create Gitea repository ... failed\n")
-		return importFailure(string(packageName), ErrCreateRepository, err, completed)
+		return fail("create Gitea repository", ErrCreateRepository, err)
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "create Gitea repository ... done\n")
 	trace.Log(ctx, "handoff", "to", "clone", "from", "forge", "via", "CreateRepository", "pkg", packageName)
 	completed = append(completed, "create Gitea repository")
+	cleanup.giteaRepo = cloneURL
 
 	repo, err := p.repoPath(ctx, packageName)
 	if err != nil {
-		if isDeadlineExceeded(err) {
-			_, _ = fmt.Fprintf(os.Stdout, "resolve repository path ... timed out\n")
-			return importTimedOut(string(packageName), completed, time.Since(importStart))
-		}
-		p.logFailure(ctx, packageName, completed, err)
-		_, _ = fmt.Fprintf(os.Stdout, "resolve repository path ... failed\n")
-		return importFailure(string(packageName), ErrResolveRepository, err, completed)
+		return fail("resolve repository path", ErrResolveRepository, err)
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "resolve repository path ... done\n")
 	trace.Log(ctx, "handoff", "to", "clone", "from", "catalog", "via", "RepositoryPath", "pkg", packageName, "path", repo)
@@ -84,10 +121,11 @@ func (p *provider) Import(ctx context.Context, packageName domain.PackageName) e
 
 	preSteps := []importStep{
 		{
-			name: "clone AUR repository",
-			dir:  filepath.Dir(repo),
-			args: []string{"clone", fmt.Sprintf("https://aur.archlinux.org/%s.git", packageName), repo},
-			err:  ErrCloneRepository,
+			name:       "clone AUR repository",
+			dir:        filepath.Dir(repo),
+			args:       []string{"clone", fmt.Sprintf("https://aur.archlinux.org/%s.git", packageName), repo},
+			err:        ErrCloneRepository,
+			createsDir: true,
 		},
 		{
 			name: "rename origin to upstream",
@@ -105,16 +143,18 @@ func (p *provider) Import(ctx context.Context, packageName domain.PackageName) e
 
 	for i, s := range preSteps {
 		if _, err := p.runner.Run(ctx, s.dir, s.args...); err != nil {
-			if isDeadlineExceeded(err) {
-				_, _ = fmt.Fprintf(os.Stdout, "%s ... timed out\n", s.name)
-				return importTimedOut(string(packageName), completed, time.Since(importStart))
+			// git removes the directory of a clone that fails, but not
+			// of one killed by the deadline.
+			if s.createsDir && isDeadlineExceeded(err) {
+				cleanup.localDir, cleanup.localPartial = repo, true
 			}
-			p.logFailure(ctx, packageName, completed, err)
-			_, _ = fmt.Fprintf(os.Stdout, "%s ... failed\n", s.name)
-			return importFailure(string(packageName), s.err, err, completed)
+			return fail(s.name, s.err, err)
 		}
 		_, _ = fmt.Fprintf(os.Stdout, "%s ... done\n", s.name)
 		completed = append(completed, s.name)
+		if s.createsDir {
+			cleanup.localDir = repo
+		}
 		if i < len(preSteps)-1 {
 			trace.Log(ctx, "handoff", "to", preSteps[i+1].name, "from", s.name, "via", "git", "pkg", packageName)
 		}
@@ -128,12 +168,7 @@ func (p *provider) Import(ctx context.Context, packageName domain.PackageName) e
 	// before creating the orphan branch.
 	branchOut, err := p.runner.Run(ctx, repo, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
-		if isDeadlineExceeded(err) {
-			_, _ = fmt.Fprintf(os.Stdout, "detect cloned branch ... timed out\n")
-			return importTimedOut(string(packageName), completed, time.Since(importStart))
-		}
-		_, _ = fmt.Fprintf(os.Stdout, "detect cloned branch ... failed\n")
-		return importFailure(string(packageName), ErrCreateMaster, err, completed)
+		return fail("detect cloned branch", ErrCreateMaster, err)
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "detect cloned branch ... done\n")
 	clonedBranch := strings.TrimSpace(branchOut)
@@ -179,13 +214,7 @@ func (p *provider) Import(ctx context.Context, packageName domain.PackageName) e
 
 	for i, s := range postSteps {
 		if _, err := p.runner.Run(ctx, s.dir, s.args...); err != nil {
-			if isDeadlineExceeded(err) {
-				_, _ = fmt.Fprintf(os.Stdout, "%s ... timed out\n", s.name)
-				return importTimedOut(string(packageName), completed, time.Since(importStart))
-			}
-			p.logFailure(ctx, packageName, completed, err)
-			_, _ = fmt.Fprintf(os.Stdout, "%s ... failed\n", s.name)
-			return importFailure(string(packageName), s.err, err, completed)
+			return fail(s.name, s.err, err)
 		}
 		_, _ = fmt.Fprintf(os.Stdout, "%s ... done\n", s.name)
 		completed = append(completed, s.name)
@@ -206,45 +235,47 @@ func isDeadlineExceeded(err error) bool {
 // importTimedOut returns a timeout-distinguishing error that clearly
 // identifies the failure as a deadline exceeded rather than a generic
 // git error. The completed-steps line is included so the user knows
-// which steps ran before the timeout.
-func importTimedOut(packageName string, completed []string, elapsed time.Duration) error {
-	return fmt.Errorf(
-		"import %q: timed out after %v (completed: %s)",
-		packageName, elapsed.Round(time.Millisecond), strings.Join(completed, ", "),
-	)
+// which steps ran before the timeout, followed by the same cleanup
+// guidance as importFailure (#401).
+func importTimedOut(packageName string, completed []string, elapsed time.Duration, cleanup importCleanup) error {
+	msg := fmt.Sprintf("import %q: timed out after %v (completed: %s)",
+		packageName, elapsed.Round(time.Millisecond), strings.Join(completed, ", "))
+	if g := cleanup.guidance(); g != "" {
+		msg += "\n\n" + g
+	}
+	return errors.New(msg)
 }
 
 // importFailure builds a consistent Import failure message: the failing
 // package, the sentinel and underlying cause (both wrapped so
 // errors.Is still works against either), which steps completed before
-// the failure, and manual-cleanup guidance whenever at least one step
-// has completed — i.e. whenever a Gitea repository may already exist.
+// the failure, and what to clean up before retrying (importCleanup).
 // When nothing has completed yet (the Forge call itself failed),
-// neither the completed-steps line nor the cleanup guidance is
-// included, since there's nothing to clean up.
-func importFailure(packageName string, sentinel, cause error, completed []string) error {
+// neither the completed-steps line nor any guidance is included, since
+// there's nothing to clean up.
+func importFailure(packageName string, sentinel, cause error, completed []string, cleanup importCleanup) error {
 	if len(completed) == 0 {
 		return fmt.Errorf("import %q: %w", packageName, cause)
 	}
-	return fmt.Errorf(
-		"import %q: %w: %w\n\nCompleted steps: %s.\n\nThe managed "+
-			"repository has already been created. Delete the remote "+
-			"repository manually before retrying",
-		packageName,
-		sentinel,
-		cause,
-		strings.Join(completed, ", "),
-	)
+	err := fmt.Errorf("import %q: %w: %w\n\nCompleted steps: %s",
+		packageName, sentinel, cause, strings.Join(completed, ", "))
+	if g := cleanup.guidance(); g != "" {
+		err = fmt.Errorf("%w\n\n%s", err, g)
+	}
+	return err
 }
 
 // logFailure appends a human-readable error entry to the workspace error log
-// whenever an Import step fails. It logs the package name, which step
-// completed before failure, the failed step, and whether manual cleanup
-// is needed — matching the information already in the wrapped error.
-func (p *provider) logFailure(ctx context.Context, packageName domain.PackageName, completed []string, cause error) {
+// whenever an Import step fails or times out. It logs the package name,
+// the cause, which steps completed before failure, and the cleanup
+// guidance — matching the information in the returned error.
+func (p *provider) logFailure(ctx context.Context, packageName domain.PackageName, completed []string, cleanup importCleanup, cause error) {
 	msg := fmt.Sprintf("import %q failed: %v", packageName, cause)
 	if len(completed) > 0 {
 		msg += fmt.Sprintf("; completed before failure: %s", strings.Join(completed, ", "))
+	}
+	if g := cleanup.guidance(); g != "" {
+		msg += "; " + g
 	}
 	_ = errorlog.Log(ctx, p.rootPath, "import", msg)
 }
