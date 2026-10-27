@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,9 @@ type mockProvider struct {
 	cloneCalls    []string
 	behindCalls   []domain.PackageName
 	upstreamCalls []domain.PackageName
+	headCalls     int      // LocalHeadCommit calls
+	mergedCalls   int      // IsMerged calls
+	fileCommits   []string // commit argument of each FileAtCommit call
 }
 
 func (m *mockProvider) Import(ctx context.Context, packageName domain.PackageName) error {
@@ -56,6 +60,7 @@ func (m *mockProvider) UpstreamCommit(ctx context.Context, packageName domain.Pa
 	return "", nil
 }
 func (m *mockProvider) IsMerged(ctx context.Context, packageName domain.PackageName, reviewedCommit string) (bool, error) {
+	m.mergedCalls++
 	return m.isMergedVal, m.isMergedErr
 }
 func (m *mockProvider) Diff(ctx context.Context, packageName domain.PackageName) (*git.GitDiff, error) {
@@ -81,9 +86,11 @@ func (m *mockProvider) CloneAt(ctx context.Context, pkgName domain.PackageName, 
 	return nil
 }
 func (m *mockProvider) LocalHeadCommit(ctx context.Context, packageName domain.PackageName) (string, error) {
+	m.headCalls++
 	return m.headCommit, m.headErr
 }
 func (m *mockProvider) FileAtCommit(ctx context.Context, packageName domain.PackageName, commit, path string) (string, error) {
+	m.fileCommits = append(m.fileCommits, commit)
 	return m.fileContent, m.fileErr
 }
 
@@ -112,291 +119,126 @@ func (m *mockReviewStore) Delete(name domain.PackageName) error {
 	return nil
 }
 
-func TestNewGitLocalVersionResolver_ReviewPending(t *testing.T) {
-	provider := &mockProvider{
-		isMergedVal: false,
-		fileContent: "pkgname=testpkg\npkgver=1.0\npkgrel=2\n",
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewPending,
-			},
-		},
-	}
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	ver, unknown := resolver(ctx, "testpkg")
-	if unknown {
-		t.Fatal("expected unknown = false for ReviewPending with valid PKGBUILD")
-	}
-	if ver != "1.0-2" {
-		t.Errorf("ver = %q, want %q", ver, "1.0-2")
-	}
-	// Verify it read from UpstreamCommit, not HEAD.
-	if provider.fileContent != "pkgname=testpkg\npkgver=1.0\npkgrel=2\n" {
-		t.Error("expected FileAtCommit to be called with review content")
-	}
-}
-
-func TestNewGitLocalVersionResolver_Approved(t *testing.T) {
-	provider := &mockProvider{
-		headCommit:  "def456",
-		fileContent: "pkgname=testpkg\npkgver=2.0\npkgrel=1\n",
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewApproved,
-			},
-		},
-	}
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	ver, unknown := resolver(ctx, "testpkg")
-	if unknown {
-		t.Fatal("expected unknown = false for Approved with valid PKGBUILD")
-	}
-	if ver != "2.0-1" {
-		t.Errorf("ver = %q, want %q", ver, "2.0-1")
-	}
-}
-
-func TestNewGitLocalVersionResolver_Merged(t *testing.T) {
-	provider := &mockProvider{
-		headCommit:  "def456",
-		fileContent: "pkgname=testpkg\npkgver=2.0\npkgrel=1\n",
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewApproved,
-			},
-		},
-	}
-	provider.isMergedVal = true
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	ver, unknown := resolver(ctx, "testpkg")
-	if unknown {
-		t.Fatal("expected unknown = false for Merged with valid PKGBUILD")
-	}
-	if ver != "2.0-1" {
-		t.Errorf("ver = %q, want %q", ver, "2.0-1")
-	}
-}
-
-func TestNewGitLocalVersionResolver_Built(t *testing.T) {
-	provider := &mockProvider{
-		headCommit:  "def456",
-		fileContent: "pkgname=testpkg\npkgver=2.0\npkgrel=1\n",
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewApproved,
-			},
-		},
-	}
-	provider.isMergedVal = true
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	ver, unknown := resolver(ctx, "testpkg")
-	if unknown {
-		t.Fatal("expected unknown = false for Built with valid PKGBUILD")
-	}
-	if ver != "2.0-1" {
-		t.Errorf("ver = %q, want %q", ver, "2.0-1")
-	}
-}
-
-func TestNewGitLocalVersionResolver_Rejected(t *testing.T) {
-	provider := &mockProvider{
-		headCommit:  "def456",
-		fileContent: "pkgname=testpkg\npkgver=3.0\npkgrel=1\n",
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewRejected,
-			},
-		},
-	}
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	ver, unknown := resolver(ctx, "testpkg")
-	if unknown {
-		t.Fatal("expected unknown = false for Rejected with valid PKGBUILD")
-	}
-	if ver != "3.0-1" {
-		t.Errorf("ver = %q, want %q", ver, "3.0-1")
-	}
-}
-
-func TestNewGitLocalVersionResolver_Published(t *testing.T) {
-	provider := &mockProvider{
-		headCommit:  "def456",
-		fileContent: "pkgname=testpkg\npkgver=3.0\npkgrel=1\n",
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewApproved,
-			},
-		},
-	}
-	provider.isMergedVal = true
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	ver, unknown := resolver(ctx, "testpkg")
-	if unknown {
-		t.Fatal("expected unknown = false for Published with valid PKGBUILD")
-	}
-	if ver != "3.0-1" {
-		t.Errorf("ver = %q, want %q", ver, "3.0-1")
-	}
-}
-
-func TestNewGitLocalVersionResolver_ReviewNotFound(t *testing.T) {
-	provider := &mockProvider{}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{},
-	}
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	_, unknown := resolver(ctx, "testpkg")
-	if !unknown {
-		t.Error("expected unknown = true when review not found")
-	}
-}
-
-func TestNewGitLocalVersionResolver_ReviewStoreError(t *testing.T) {
-	provider := &mockProvider{}
-	store := &mockReviewStore{
-		err: fmt.Errorf("store error"),
-	}
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	_, unknown := resolver(ctx, "testpkg")
-	if !unknown {
-		t.Error("expected unknown = true when review store returns error")
-	}
-}
-
-func TestNewGitLocalVersionResolver_HeadCommitError(t *testing.T) {
-	provider := &mockProvider{
-		headErr: fmt.Errorf("git error"),
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewApproved,
-			},
-		},
-	}
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	_, unknown := resolver(ctx, "testpkg")
-	if !unknown {
-		t.Error("expected unknown = true when LocalHeadCommit fails")
-	}
-}
-
-func TestNewGitLocalVersionResolver_FileAtCommitError(t *testing.T) {
-	provider := &mockProvider{
-		headCommit: "def456",
-		fileErr:    fmt.Errorf("file error"),
-	}
-	store := &mockReviewStore{
-		reviews: map[domain.PackageName]*domain.Review{
-			"testpkg": {
-				PackageName:    "testpkg",
-				UpstreamCommit: "abc123",
-				Status:         domain.ReviewApproved,
-			},
-		},
-	}
-	resolver := NewGitLocalVersionResolver(provider, store)
-	ctx := context.Background()
-	_, unknown := resolver(ctx, "testpkg")
-	if !unknown {
-		t.Error("expected unknown = true when FileAtCommit fails")
-	}
-}
-
-// TestNewGitLocalVersionResolver_BucketStates verifies that Approved,
-// Merged, Built, Confirmed, Rejected and Published all read from HEAD,
-// while ReviewPending reads from UpstreamCommit.
-func TestNewGitLocalVersionResolver_BucketStates(t *testing.T) {
+// #426 — the local version is read at the reviewed commit
+// (Review.UpstreamCommit) whatever the review state; local master is never
+// read (workflow.md § Local Version).
+func TestNewGitLocalVersionResolver_ReadsReviewedCommit(t *testing.T) {
 	pkg := domain.PackageName("testpkg")
-	pkgbuild := "pkgname=testpkg\npkgver=1.0\npkgrel=1\n"
-
-	testCases := []struct {
-		name         string
-		status       domain.ReviewStatus
-		isMerged     bool
-		expectBucket string
+	tests := []struct {
+		name     string
+		status   domain.ReviewStatus
+		isMerged bool
 	}{
-		{"ReviewPending", domain.ReviewPending, false, "bucket2"},
-		{"Approved", domain.ReviewApproved, false, "bucket3"},
-		{"Merged", domain.ReviewApproved, true, "bucket3"},
-		{"Rejected", domain.ReviewRejected, false, "bucket3"},
+		{"Pending", domain.ReviewPending, false},
+		{"Approved, not merged", domain.ReviewApproved, false},
+		{"Approved and merged", domain.ReviewApproved, true},
+		{"Rejected", domain.ReviewRejected, false},
 	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			provider := &mockProvider{
-				headCommit:  "head123",
-				fileContent: pkgbuild,
-				isMergedVal: tc.isMerged,
+				headCommit:  "head123", // local master; must not be read
+				isMergedVal: tt.isMerged,
+				fileContent: "pkgname=testpkg\npkgver=1.11.0\npkgrel=1\n",
 			}
-			store := &mockReviewStore{
-				reviews: map[domain.PackageName]*domain.Review{
-					pkg: {
-						PackageName:    pkg,
-						UpstreamCommit: "abc123",
-						Status:         tc.status,
-					},
-				},
+			store := &mockReviewStore{reviews: map[domain.PackageName]*domain.Review{
+				pkg: {PackageName: pkg, UpstreamCommit: "reviewed456", Status: tt.status},
+			}}
+
+			ver, err := NewGitLocalVersionResolver(provider, store)(context.Background(), pkg)
+
+			if err != nil || ver != "1.11.0-1" {
+				t.Errorf("got (%q, %v), want (\"1.11.0-1\", nil)", ver, err)
 			}
-			resolver := NewGitLocalVersionResolver(provider, store)
-			ctx := context.Background()
-			ver, unknown := resolver(ctx, pkg)
-			if unknown {
-				t.Fatalf("expected unknown = false for %s", tc.name)
+			if want := []string{"reviewed456"}; !equalStrings(provider.fileCommits, want) {
+				t.Errorf("FileAtCommit commits = %v, want %v", provider.fileCommits, want)
 			}
-			if ver != "1.0-1" {
-				t.Errorf("ver = %q, want %q", ver, "1.0-1")
+			if provider.headCalls != 0 {
+				t.Errorf("LocalHeadCommit called %d times, want 0", provider.headCalls)
+			}
+			if provider.mergedCalls != 0 {
+				t.Errorf("IsMerged called %d times, want 0", provider.mergedCalls)
 			}
 		})
 	}
+}
+
+// #402 — an unknown local version carries its reason.
+func TestNewGitLocalVersionResolver_Unknown(t *testing.T) {
+	pkg := domain.PackageName("testpkg")
+	reviewed := func(commit string) *mockReviewStore {
+		return &mockReviewStore{reviews: map[domain.PackageName]*domain.Review{
+			pkg: {PackageName: pkg, UpstreamCommit: commit, Status: domain.ReviewApproved},
+		}}
+	}
+	storeErr := errors.New("store error")
+	fileErr := errors.New("file error")
+	const static = "pkgname=testpkg\npkgver=1.0\npkgrel=1\n"
+	// Same shape as TestExtractFullVersion_DynamicPkgver.
+	const dynamic = "pkgver() {\n  git describe\n}\npkgrel=1\n"
+	tests := []struct {
+		name      string
+		store     *mockReviewStore
+		content   string
+		fileErr   error
+		wantErr   error  // matched with errors.Is
+		wantMsg   string // substring of the message
+		wantReads int
+	}{
+		{"no review", &mockReviewStore{reviews: map[domain.PackageName]*domain.Review{}}, static, nil, ErrNoReview, "no review record", 0},
+		{"review store error", &mockReviewStore{err: storeErr}, static, nil, storeErr, "read review: store error", 0},
+		{"review without UpstreamCommit", reviewed(""), static, nil, ErrNoUpstreamCommit, "no upstream commit", 0},
+		{"PKGBUILD read fails", reviewed("reviewed456789"), static, fileErr, fileErr, "read PKGBUILD at reviewe: file error", 1},
+		{"pkgver() function", reviewed("reviewed456789"), dynamic, nil, ErrVersionNotReadable, "pkgver()", 1},
+		{"no pkgver", reviewed("reviewed456789"), "pkgname=testpkg\n", nil, ErrVersionNotReadable, "pkgver()", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &mockProvider{fileContent: tt.content, fileErr: tt.fileErr}
+			ver, err := NewGitLocalVersionResolver(provider, tt.store)(context.Background(), pkg)
+			if ver != "" {
+				t.Errorf("version = %q, want \"\"", ver)
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want errors.Is %v", err, tt.wantErr)
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("err = %v, want message containing %q", err, tt.wantMsg)
+			}
+			if len(provider.fileCommits) != tt.wantReads {
+				t.Errorf("FileAtCommit called %d times, want %d", len(provider.fileCommits), tt.wantReads)
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // bulkCheckDiskResolver creates a LocalVersionResolver that reads from
 // a filesystem directory — matching the old NewClient behavior for
 // existing BulkCheck tests.
 func bulkCheckDiskResolver(rootPath string) LocalVersionResolver {
-	return func(ctx context.Context, pkg domain.PackageName) (string, bool) {
+	return func(ctx context.Context, pkg domain.PackageName) (string, error) {
 		pkgbuildPath := filepath.Join(rootPath, string(pkg), "PKGBUILD")
 		data, err := os.ReadFile(pkgbuildPath)
 		if err != nil {
-			return "", true
+			return "", err
 		}
-		return ExtractFullVersion(string(data))
+		ver, unknown := ExtractFullVersion(string(data))
+		if unknown {
+			return "", ErrVersionNotReadable
+		}
+		return ver, nil
 	}
 }
 
@@ -447,6 +289,9 @@ pkgrel=2
 	}
 	if pair.LocalUnknown {
 		t.Error("expected LocalUnknown = false")
+	}
+	if pair.LocalErr != nil {
+		t.Errorf("LocalErr = %v, want nil", pair.LocalErr)
 	}
 }
 
@@ -585,6 +430,9 @@ func TestBulkCheck_MissingPKGBUILD(t *testing.T) {
 	if !pair.LocalUnknown {
 		t.Error("expected LocalUnknown = true for missing PKGBUILD")
 	}
+	if !errors.Is(pair.LocalErr, os.ErrNotExist) {
+		t.Errorf("LocalErr = %v, want the resolver's error (os.ErrNotExist)", pair.LocalErr)
+	}
 	if pair.AURStale {
 		t.Error("expected AURStale = false when local version is unknown")
 	}
@@ -649,5 +497,39 @@ func TestAURStale_Ties(t *testing.T) {
 	}
 	if result.Pairs[0].AURStale {
 		t.Error("expected AURStale = false for version tie")
+	}
+}
+
+// blockingDoer never answers: Do returns only once the request's context
+// is done, standing in for a stalled AUR endpoint.
+type blockingDoer struct{}
+
+func (blockingDoer) Do(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+// TestFetchAURVersions_ClientTimeout guards #416: the client's own timeout
+// bounds the request even when the caller's context has no deadline.
+func TestFetchAURVersions_ClientTimeout(t *testing.T) {
+	client := NewClient("http://aur.invalid/rpc/", 50*time.Millisecond, bulkCheckDiskResolver(t.TempDir()))
+	client.client = blockingDoer{}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.FetchAURVersions(context.Background(), []domain.PackageName{"testpkg"})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrAURClientUnreachable) {
+			t.Fatalf("expected ErrAURClientUnreachable, got: %v", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("FetchAURVersions did not return: client timeout not applied")
 	}
 }

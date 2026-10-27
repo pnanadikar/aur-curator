@@ -2,10 +2,27 @@ package aurinfo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/pramod/aur-curator/internal/domain"
 	"github.com/pramod/aur-curator/internal/git"
-	"github.com/pramod/aur-curator/internal/lifecycle"
+)
+
+// Why a local version is unknown. A resolver returns one of these, or the
+// error from reading the review or the PKGBUILD, wrapped.
+var (
+	// ErrNoReview: the package has no review, so there is no reviewed
+	// commit to read the version from.
+	ErrNoReview = errors.New("no review record")
+	// ErrNoUpstreamCommit: the review does not name the commit it covers.
+	ErrNoUpstreamCommit = errors.New("review has no upstream commit")
+	// ErrVersionNotReadable: the PKGBUILD was read, but its version cannot
+	// be taken from it — a pkgver() function, a missing pkgver or pkgrel,
+	// or a computed epoch, pkgver or pkgrel (ExtractFullVersion). It is a
+	// property of the package, true on every check, not a failure of this
+	// one (workflow.md § Update).
+	ErrVersionNotReadable = errors.New("version cannot be read from the PKGBUILD (pkgver() function, or pkgver/pkgrel missing, or epoch/pkgver/pkgrel computed)")
 )
 
 // LocalVersionResolver resolves a package's local version from its
@@ -13,50 +30,56 @@ import (
 // never a working-tree disk read — per workflow.md § Local Version —
 // Git-Committed, Not Working Tree, since Build (internal/build/engine.go)
 // clones and builds only from a resolved commit, never the working tree.
-type LocalVersionResolver func(ctx context.Context, pkg domain.PackageName) (version string, unknown bool)
+//
+// A non-nil error means the version is unknown and says why; version is
+// then "".
+type LocalVersionResolver func(ctx context.Context, pkg domain.PackageName) (version string, err error)
 
 // NewGitLocalVersionResolver returns a LocalVersionResolver that reads
-// the PKGBUILD relevant to a package's current lifecycle state:
-//   - ReviewPending: content at the pending review's UpstreamCommit
-//     (matches update's bucket-2 behavior).
-//   - Approved/Merged/Built/Confirmed/Rejected/Published: content at
-//     local HEAD (matches update's bucket-3 / parseLocalMasterVersion).
-//   - Anything else (no review yet, review lookup error): unknown.
+// the PKGBUILD at the commit the package's current review covers
+// (Review.UpstreamCommit), whatever the review's state — Pending,
+// Approved, Rejected, or Approved and merged (workflow.md § Local
+// Version, #426). Local master is never read: what is left to do with the
+// reviewed commit is the lifecycle state's business, not the version
+// comparison's.
+//
+// The version is unknown, with the reason as the error (#402), when the
+// package has no review (ErrNoReview), the review cannot be read, the
+// review has no UpstreamCommit (ErrNoUpstreamCommit), the PKGBUILD read
+// fails, or the version cannot be taken from the PKGBUILD
+// (ErrVersionNotReadable). The git read runs under its own
+// git.GitTimeout, so a caller with no deadline of its own (update, #417)
+// cannot hang on it.
 func NewGitLocalVersionResolver(provider git.Provider, reviewDB domain.ReviewStore) LocalVersionResolver {
-	return func(ctx context.Context, pkg domain.PackageName) (string, bool) {
+	return func(ctx context.Context, pkg domain.PackageName) (string, error) {
 		review, err := reviewDB.Get(pkg)
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			return "", ErrNoReview
+		case err != nil:
+			return "", fmt.Errorf("read review: %w", err)
+		case review.UpstreamCommit == "":
+			return "", ErrNoUpstreamCommit
+		}
+
+		gitCtx, cancel := git.GitTimeoutCtx(ctx)
+		defer cancel()
+		content, err := provider.FileAtCommit(gitCtx, pkg, review.UpstreamCommit, "PKGBUILD")
 		if err != nil {
-			return "", true
+			return "", fmt.Errorf("read PKGBUILD at %s: %w", shortCommit(review.UpstreamCommit), err)
 		}
-
-		var isMerged bool
-		if review.UpstreamCommit != "" {
-			isMerged, _ = provider.IsMerged(ctx, pkg, review.UpstreamCommit)
+		ver, unknown := ExtractFullVersion(content)
+		if unknown {
+			return "", ErrVersionNotReadable
 		}
-		state := lifecycle.DeriveState(lifecycle.Inputs{
-			ReviewStatus: review.Status,
-			HasReview:    true,
-			IsMerged:     isMerged,
-		})
-
-		var commit string
-		switch state {
-		case lifecycle.ReviewPending:
-			commit = review.UpstreamCommit
-		case lifecycle.Approved, lifecycle.Merged, lifecycle.Built, lifecycle.Confirmed, lifecycle.Rejected, lifecycle.Published:
-			head, err := provider.LocalHeadCommit(ctx, pkg)
-			if err != nil {
-				return "", true
-			}
-			commit = head
-		default:
-			return "", true
-		}
-
-		content, err := provider.FileAtCommit(ctx, pkg, commit, "PKGBUILD")
-		if err != nil {
-			return "", true
-		}
-		return ExtractFullVersion(content)
+		return ver, nil
 	}
+}
+
+// shortCommit abbreviates a commit hash for messages.
+func shortCommit(c string) string {
+	if len(c) > 7 {
+		return c[:7]
+	}
+	return c
 }

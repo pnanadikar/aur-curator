@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/pramod/aur-curator/internal/procgroup"
 	"github.com/pramod/aur-curator/internal/sanitize"
@@ -32,7 +33,14 @@ func (ExecRunner) Run(ctx context.Context, dir string, args ...string) (string, 
 
 	if err != nil {
 		trace.Log(ctx, "handoff", "to", "caller", "from", "runner", "cmd", args, "status", "failed", "stderr", stderr.String())
-		return "", fmt.Errorf("git %v: %w: %s", args, err, sanitize.ForMessage(stderr.String()))
+		// A process killed because ctx ended says only "signal: killed";
+		// Interrupted says it timed out (and after how long) or was
+		// cancelled, and keeps ctx.Err() for errors.Is (#417).
+		err = Interrupted(ctx, err)
+		if msg := strings.TrimSpace(sanitize.ForMessage(stderr.String())); msg != "" {
+			return "", fmt.Errorf("git %v: %w: %s", args, err, msg)
+		}
+		return "", fmt.Errorf("git %v: %w", args, err)
 	}
 	race := "cmd"
 	if ctx.Err() != nil {

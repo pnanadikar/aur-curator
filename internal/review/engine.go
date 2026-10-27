@@ -323,14 +323,16 @@ func fetchAndReview(ctx context.Context, g git.Provider, reviews *Engine, pkg do
 		ctx = context.Background()
 	}
 	parent := ctx
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := git.WithTimeout(parent, timeout)
 	defer cancel()
 
 	// timedOut labels err when this function's own deadline caused it —
-	// not a cancel or a deadline of the caller's ctx.
+	// not a cancel or a deadline of the caller's ctx. The wording comes
+	// from git.Interrupted, the same as every other git timeout (#417);
+	// an error the git runner already labelled keeps its label.
 	timedOut := func(err error) error {
 		if parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("fetch %s: timed out after %v: %w", pkg, timeout, err)
+			return fmt.Errorf("fetch %s: %w", pkg, git.Interrupted(ctx, err))
 		}
 		return err
 	}

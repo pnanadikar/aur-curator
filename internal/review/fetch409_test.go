@@ -57,10 +57,10 @@ func TestFetchAndReviewTimeout409(t *testing.T) {
 	}{
 		{name: "fetch hangs", timeout: short,
 			parent: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
-			want:   "fetch pkg: timed out after 20ms: signal: killed"},
+			want:   "fetch pkg: timed out after 20ms"},
 		{name: "commit read after fetch times out", timeout: short, fetchSucceeds: true,
 			parent: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
-			want:   "fetch pkg: timed out after 20ms: signal: killed"},
+			want:   "fetch pkg: timed out after 20ms"},
 		{name: "caller cancels", timeout: time.Hour,
 			parent: func() (context.Context, context.CancelFunc) {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -97,6 +97,9 @@ func TestFetchAndReviewTimeout409(t *testing.T) {
 			}
 			if !errors.Is(err, errKilled) {
 				t.Fatalf("err does not wrap the git error: %v", err)
+			}
+			if tc.timeout == short && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("err does not wrap context.DeadlineExceeded: %v", err)
 			}
 			if store.saved != nil {
 				t.Fatalf("a review was saved: %+v", store.saved)

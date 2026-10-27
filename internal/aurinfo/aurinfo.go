@@ -21,10 +21,10 @@ var (
 	ErrAURPackageNotFound   = errors.New("aur: package not found")
 )
 
-// ScalarRe matches plain PKGBUILD scalar assignments (pkgver, pkgrel).
-// Reuses the pattern from internal/analyzer/pkgbuild.go:358 against
-// raw file lines — no diff-prefix stripping needed.
-var ScalarRe = regexp.MustCompile(`^\s*(pkgver|pkgrel)\s*=\s*(.+?)\s*$`)
+// ScalarRe matches plain PKGBUILD scalar assignments (epoch, pkgver,
+// pkgrel). Reuses the pattern from internal/analyzer/pkgbuild.go:358
+// against raw file lines — no diff-prefix stripping needed.
+var ScalarRe = regexp.MustCompile(`^\s*(epoch|pkgver|pkgrel)\s*=\s*(.+?)\s*$`)
 
 // PkgverFuncRe matches a pkgver() function definition header.
 // When present, the version is dynamically computed and cannot be
@@ -41,16 +41,22 @@ type VersionPair struct {
 	// LocalVersion is the version string parsed from the local PKGBUILD,
 	// or "" if parsing failed or the file does not exist.
 	LocalVersion string
-	// AURStale reports whether the local version is strictly behind
-	// the AUR version. True only when both sides have a parsed value.
+	// AURStale reports whether the AUR version differs from the local
+	// one — not whether it is newer: the reviewed commit comes from the
+	// AUR's own history, so any difference is a later AUR commit
+	// (workflow.md § Local Version, #433). True only when both sides
+	// have a parsed value.
 	AURStale bool
 	// AURUnknown is true when the AUR call could not confirm this
 	// package (deleted, renamed, or RPC error).  An unknown result
 	// is never treated as "up to date."
 	AURUnknown bool
-	// LocalUnknown is true when the local PKGBUILD could not be parsed
-	// (e.g. uses a dynamic pkgver() function).
+	// LocalUnknown is true when the local version could not be resolved;
+	// LocalErr says why.
 	LocalUnknown bool
+	// LocalErr is the resolver's reason the local version is unknown
+	// (LocalVersionResolver), nil when it is known (#402).
+	LocalErr error
 }
 
 // CheckResult bundles the bulk check output and any transient error.
@@ -75,7 +81,9 @@ type Client struct {
 }
 
 // NewClient creates a bulk check client. baseURL is typically
-// "https://aur.archlinux.org/rpc/". timeout controls the HTTP call;
+// "https://aur.archlinux.org/rpc/". timeout caps each AUR RPC request
+// made by FetchAURVersions (a shorter deadline on the caller's context
+// still wins; 0 means no cap of its own).
 // resolveLocal resolves the local PKGBUILD version for each package
 // using git-committed content per workflow.md § Local Version —
 // Git-Committed, Not Working Tree.
@@ -112,9 +120,10 @@ func (c *Client) BulkCheck(ctx context.Context, pkgs []domain.PackageName) Check
 			pair.AURUnknown = true
 		}
 
-		localVer, localUnknown := c.resolveLocal(ctx, pkg)
+		localVer, localErr := c.resolveLocal(ctx, pkg)
 		pair.LocalVersion = localVer
-		pair.LocalUnknown = localUnknown
+		pair.LocalErr = localErr
+		pair.LocalUnknown = localErr != nil
 
 		pair.AURStale, _ = CompareVersions(pair.AURVersion, pair.LocalVersion)
 
@@ -128,8 +137,15 @@ func (c *Client) BulkCheck(ctx context.Context, pkgs []domain.PackageName) Check
 // and returns a map of package name to AUR version string. Packages not
 // found in the AUR response are absent from the map. Returns an error
 // only when the HTTP call itself fails (network, HTTP error code, or
-// malformed response).
+// malformed response). The whole round-trip, including reading the body,
+// runs under the client's timeout (see NewClient).
 func (c *Client) FetchAURVersions(ctx context.Context, pkgs []domain.PackageName) (map[domain.PackageName]string, error) {
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+
 	url := c.buildURL(pkgs)
 	trace.Log(ctx, "aurinfo", "cmd", "FetchAURVersions", "url", url, "pkgCount", len(pkgs))
 
@@ -202,38 +218,46 @@ func (c *Client) buildURL(pkgs []domain.PackageName) string {
 }
 
 // ExtractScalar scans raw text and returns the first scalar value for
-// the given name matched by ScalarRe. Returns ("", true) when no
-// match is found or when the value appears to come from a dynamic
-// function (detected heuristically by the presence of $scalar
-// expansion inside the value).
+// the given name matched by ScalarRe. Returns ("", true) when no match
+// is found, when the value is computed rather than assigned (it contains
+// a $ or ` expansion, #433), or, for pkgver, when the PKGBUILD starts
+// with a pkgver() function.
 //
 // ExtractScalar is exported so callers (e.g. the update command) can
 // parse PKGBUILD content retrieved via git.FileAtCommit without
 // duplicating the regex logic.
 func ExtractScalar(raw string, name string) (string, bool) {
+	val, found, computed := scanScalar(raw, name)
+	if !found || computed {
+		return "", true
+	}
+	return val, false
+}
+
+// scanScalar finds the first assignment to name. found is false when
+// there is none; computed is true when its value is an expansion rather
+// than a literal, or (pkgver only) when a pkgver() function is detected.
+func scanScalar(raw string, name string) (val string, found, computed bool) {
 	// If a pkgver() function is present, treat the version as unknown.
 	if name == "pkgver" && PkgverFuncRe.MatchString(raw) {
-		return "", true
+		return "", true, true
 	}
 	for _, line := range strings.Split(raw, "\n") {
 		m := ScalarRe.FindStringSubmatch(line)
-		if m == nil {
+		if m == nil || m[1] != name {
 			continue
 		}
-		if m[1] != name {
-			continue
+		v := m[2]
+		// A $ or ` means the value is computed by the shell (a variable,
+		// ${...}, $(...), or the scalar itself), which aur-curator does
+		// not evaluate. None of epoch, pkgver or pkgrel can contain these
+		// characters literally.
+		if strings.ContainsAny(v, "$`") {
+			return "", true, true
 		}
-		val := m[2]
-		// Heuristic: if the value contains shell expansion of the
-		// scalar itself ($scalar or ${scalar}), it likely comes from
-		// a pkgver() function body where pkgver is reassigned. Treat as unknown.
-		if strings.Contains(val, "$"+name) || strings.Contains(val, "${"+name+"}") {
-			return "", true // local unknown
-		}
-		val = stripPKGBUILDQuotes(val)
-		return val, false
+		return stripPKGBUILDQuotes(v), true, false
 	}
-	return "", true // local unknown
+	return "", false, false
 }
 
 // stripPKGBUILDQuotes removes a single matching pair of surrounding
@@ -257,10 +281,10 @@ func extractScalar(raw string, name string) (string, bool) {
 	return ExtractScalar(raw, name)
 }
 
-// ExtractFullVersion returns the combined version string in
-// "pkgver-pkgrel" format as reported by the AUR RPC "Version" field.
-// When pkgrel is absent or unparsable, returns just the pkgver value.
-// When pkgver is absent or unparsable, returns ("", true).
+// ExtractFullVersion returns the version as the AUR RPC "Version" field
+// writes it: "[epoch:]pkgver-pkgrel", the epoch left out when absent or
+// 0 (workflow.md § Local Version, #433). Returns ("", true) when pkgver
+// or pkgrel is missing or computed, or when epoch is computed.
 func ExtractFullVersion(raw string) (string, bool) {
 	pkgver, verUnknown := ExtractScalar(raw, "pkgver")
 	if verUnknown {
@@ -268,9 +292,17 @@ func ExtractFullVersion(raw string) (string, bool) {
 	}
 	pkgrel, relUnknown := ExtractScalar(raw, "pkgrel")
 	if relUnknown {
-		return pkgver, false
+		return "", true
 	}
-	return fmt.Sprintf("%s-%s", pkgver, pkgrel), false
+	epoch, found, computed := scanScalar(raw, "epoch")
+	if computed {
+		return "", true
+	}
+	v := fmt.Sprintf("%s-%s", pkgver, pkgrel)
+	if found && epoch != "" && epoch != "0" {
+		v = epoch + ":" + v
+	}
+	return v, false
 }
 
 // aurRPCResponse mirrors the AUR RPC v5 "info" response structure.

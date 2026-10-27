@@ -83,16 +83,50 @@ pkgrel=4
 	}
 }
 
+// #433 — without pkgrel the version cannot match the AUR's (makepkg
+// refuses such a PKGBUILD), so it is unknown rather than pkgver alone.
 func TestExtractFullVersion_NoPkgrel(t *testing.T) {
 	raw := `pkgname=testpkg
 pkgver=1.2.3
 `
 	val, unknown := ExtractFullVersion(raw)
-	if unknown {
-		t.Fatal("expected unknown = false")
+	if !unknown || val != "" {
+		t.Errorf("got (%q, unknown=%v), want (\"\", true)", val, unknown)
 	}
-	if val != "1.2.3" {
-		t.Errorf("val = %q, want %q", val, "1.2.3")
+}
+
+// #433 — the version is written as the AUR writes it:
+// [epoch:]pkgver-pkgrel, with an absent or 0 epoch left out.
+func TestExtractFullVersion_Epoch(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		want        string
+		wantUnknown bool
+	}{
+		{"no epoch", "pkgver=1.4.4\npkgrel=2\n", "1.4.4-2", false},
+		{"epoch", "epoch=1\npkgver=1.4.4\npkgrel=2\n", "1:1.4.4-2", false},
+		{"epoch after pkgver", "pkgver=1.4.4\npkgrel=2\nepoch=2\n", "2:1.4.4-2", false},
+		{"epoch 0 is left out", "epoch=0\npkgver=1.4.4\npkgrel=2\n", "1.4.4-2", false},
+		{"quoted epoch", "epoch='1'\npkgver=1.4.4\npkgrel=2\n", "1:1.4.4-2", false},
+		{"indented epoch", "  epoch = 3\npkgver=1.4.4\npkgrel=2\n", "3:1.4.4-2", false},
+		{"computed epoch", "epoch=$_epoch\npkgver=1.4.4\npkgrel=2\n", "", true},
+		{"self-referencing epoch", "epoch=${epoch}\npkgver=1.4.4\npkgrel=2\n", "", true},
+		{"computed pkgver", "pkgver=${_pkgver}\npkgrel=2\n", "", true},
+		{"command substitution pkgrel", "pkgver=1.4.4\npkgrel=`echo 2`\n", "", true},
+		{"computed pkgrel", "pkgver=1.4.4\npkgrel=$(echo 2)\n", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			val, unknown := ExtractFullVersion(tt.raw)
+			if val != tt.want || unknown != tt.wantUnknown {
+				t.Errorf("ExtractFullVersion(%q) = (%q, %v), want (%q, %v)", tt.raw, val, unknown, tt.want, tt.wantUnknown)
+			}
+		})
+	}
+	// Matches the AUR's Version for the same package: not stale.
+	if stale, _ := CompareVersions("1:1.4.4-2", "1:1.4.4-2"); stale {
+		t.Error("epoch package reported stale against its own AUR version")
 	}
 }
 

@@ -83,7 +83,7 @@ func (p *provider) Import(ctx context.Context, packageName domain.PackageName) e
 		if isDeadlineExceeded(err) {
 			_, _ = fmt.Fprintf(os.Stdout, "%s ... timed out\n", step)
 			elapsed := time.Since(importStart)
-			p.logFailure(ctx, packageName, completed, cleanup, fmt.Errorf("%s timed out after %v: %w", step, elapsed.Round(time.Millisecond), err))
+			p.logFailure(ctx, packageName, completed, cleanup, stepTimedOut(step, elapsed, err))
 			return importTimedOut(string(packageName), completed, elapsed, cleanup)
 		}
 		p.logFailure(ctx, packageName, completed, cleanup, err)
@@ -225,6 +225,18 @@ func (p *provider) Import(ctx context.Context, packageName domain.PackageName) e
 
 	trace.Log(ctx, "handoff", "to", "complete", "from", "commit", "via", "Import", "pkg", packageName)
 	return nil
+}
+
+// stepTimedOut is the errors.log cause for an Import step that timed
+// out. An error the git runner already labelled ("git [clone …]: timed
+// out after 2m0s", #417) is kept as it is, so the line says it timed out
+// once; any other is labelled with the time Import had been running.
+func stepTimedOut(step string, elapsed time.Duration, err error) error {
+	var ie *InterruptedError
+	if errors.As(err, &ie) {
+		return fmt.Errorf("%s: %w", step, err)
+	}
+	return fmt.Errorf("%s timed out after %v: %w", step, elapsed.Round(time.Millisecond), err)
 }
 
 // isDeadlineExceeded reports whether err is a context deadline exceeded error.

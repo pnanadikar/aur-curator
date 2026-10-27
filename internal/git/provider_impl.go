@@ -24,22 +24,18 @@ const ImportTimeout = 2 * time.Minute
 // If parent is non-nil, it becomes the parent of the timeout context so
 // that cancellation of parent propagates through (preserving X-key
 // cancellation cascade). If parent is nil, falls back to
-// context.Background() to avoid a nil-parent panic.
+// context.Background() to avoid a nil-parent panic. The timeout is
+// recorded (WithTimeout), so a git call it stops says "timed out after
+// 1m0s" (#417).
 func GitTimeoutCtx(parent context.Context) (context.Context, context.CancelFunc) {
-	if parent != nil {
-		return context.WithTimeout(parent, GitTimeout)
-	}
-	return context.WithTimeout(context.Background(), GitTimeout)
+	return WithTimeout(parent, GitTimeout)
 }
 
 // ImportTimeoutCtx derives a context with an ImportTimeout deadline
 // from parent.  Same derive-from-parent-or-fall-back-to-background
 // shape as GitTimeoutCtx, parameterized on the longer duration.
 func ImportTimeoutCtx(parent context.Context) (context.Context, context.CancelFunc) {
-	if parent != nil {
-		return context.WithTimeout(parent, ImportTimeout)
-	}
-	return context.WithTimeout(context.Background(), ImportTimeout)
+	return WithTimeout(parent, ImportTimeout)
 }
 
 // httpDoer abstracts the HTTP client for testability.

@@ -1,6 +1,6 @@
 # Developer Guide: aur-curator
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 > Status: Active
 > Companion docs: `architecture.md`, `interfaces.md`, `domain.md`,
 > `workflow.md`, `ui-overview.md`; repository root `DEVELOPMENT.md`
@@ -257,8 +257,10 @@ is queued behind others, a toast shows how many are ahead.
    active operation, updates the lane (Failed also writes `errors.log`;
    Cancelled writes the activity log), then calls `drainQueueCmd` again.
 4. `Ctrl+T` calls the active operation's cancel function; the operation
-   returns `OperationCancelledMsg`. A cancel that no longer matches the
-   active operation is ignored (#335).
+   returns `OperationCancelledMsg` — Fetch, Analyze, Merge and Build map an
+   error matching `context.Canceled` to it, not to `OperationFailedMsg`
+   (#417). A cancel that no longer matches the active operation is ignored
+   (#335).
 
 ### Panel
 
@@ -557,6 +559,21 @@ content that isn't what's drawn, with no compiler error.
 `View` and the size calculation, and `widgets.FlexHeight` turns the
 remaining height into the pane size. No hardcoded row counts.
 
+### Git timeouts: one per call, recorded
+
+**Rule:** a git call that can hang gets its own timeout from
+`git.GitTimeoutCtx` (60s) or `git.ImportTimeoutCtx` (2m), both built on
+`git.WithTimeout`, which records the duration in the context. Don't put a
+deadline around a whole command or phase: it nests the per-call timeouts,
+and when it fires first the error can't say which call hung or for how
+long. Build (makepkg) has no timeout by design (#211).
+
+**Why:** the git runner labels an error from a done context with
+`git.Interrupted`: "timed out after 1m0s" when the recorded timeout fired,
+plain "timed out" when some other deadline did, "cancelled" on a cancel. The
+label wraps `ctx.Err()`, so `errors.Is` matches `context.DeadlineExceeded`
+and `context.Canceled`. Before #417 all three read "signal: killed".
+
 ### Context lifetime: never defer cancel() on a context embedded in an outgoing Msg
 
 **Rule:** if a context is going to be embedded in a message returned from a
@@ -594,10 +611,6 @@ known; fix it under its own issue, not as a side effect.
 - **Large files.** `screens/dashboard.go` (~1,360 lines), `screens/detail.go`
   (~1,170) and `ui/app.go` (~1,030, with six near-identical request cases in
   `update`).
-- **Timeout errors don't say so outside Fetch.** Analyze, Merge, Fetch and
-  the AUR check have a 60-second timeout on git calls (Build has none by
-  design, #211), but only Fetch labels a timeout as one (#409); the others
-  report git's `signal: killed` (#417).
 - **Unused or unread pieces:** `Dependencies.RepoStore`, `OperationLogMsg`
   and `OperationsQueue.AppendLog` (#407); the `builderBackend`,
   `analyzerConfig` and `uiPreferences` config keys (#408); `PolicyConfig`

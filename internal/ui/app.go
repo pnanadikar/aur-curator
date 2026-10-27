@@ -909,6 +909,12 @@ func (a App) executeOperation(op Operation) tea.Cmd {
 			ctx := op.TraceCtx
 			res, err := review.FetchAndReview(ctx, a.deps.Git, a.deps.Reviews, op.Pkg)
 			if err != nil {
+				// A Ctrl+T cancel reaches here as context.Canceled (the git
+				// runner keeps it, #417): report a cancel, not a failure —
+				// as Build does. Analyze and Merge do the same.
+				if errors.Is(err, context.Canceled) {
+					return msgs.OperationCancelledMsg{OpID: op.ID, TraceCtx: ctx}
+				}
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: err, TraceCtx: ctx}
 			}
 			switch {
@@ -932,6 +938,9 @@ func (a App) executeOperation(op Operation) tea.Cmd {
 			// one: no fetch, no InitiateReview (#399).
 			analysis, err := a.deps.Reviews.RunAnalyzers(gitCtx, op.Pkg, op.ReviewID)
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return msgs.OperationCancelledMsg{OpID: op.ID, TraceCtx: ctx}
+				}
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: err, TraceCtx: ctx}
 			}
 			trace.Log(gitCtx, "handoff", "to", "store", "from", "reviews", "via", "RunAnalyzers", "pkg", op.Pkg, "result", analysis.Status)
@@ -951,6 +960,9 @@ func (a App) executeOperation(op Operation) tea.Cmd {
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("merge: review status is %s, not approved", review.Status), TraceCtx: ctx}
 			}
 			if err := a.deps.Git.Merge(gitCtx, op.Pkg, review.UpstreamCommit); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return msgs.OperationCancelledMsg{OpID: op.ID, TraceCtx: ctx}
+				}
 				_ = aurlog.Log(gitCtx, a.deps.Config.ActivityLogPath, "merge", string(op.Pkg), "status", "failed", "error", err.Error())
 				return msgs.OperationFailedMsg{OpID: op.ID, Kind: op.Kind.String(), Err: fmt.Errorf("merge: %w", err), TraceCtx: ctx}
 			}

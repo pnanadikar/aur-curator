@@ -43,11 +43,20 @@ illegal lifecycle states. Auto-fixes what it can (orphan cleanup, dangling
 refs); reports-only findings cause a non-zero exit.
 
 **`update`**
-Check all curated packages against upstream/AUR. Packages without a Review
-record are excluded as an error signal. Review-pending packages with a
-stale upstream are individually confirmed. Everything else (approved,
-merged, built, confirmed, published) is presented as a y/n/a/q batch
-list. Never installs anything.
+Check each package's reviewed commit against the AUR and offer a fetch
+where the AUR has moved on. A package whose fetch would discard something
+(a pending review, or an approved review not yet merged) is asked about
+on its own, with a warning: y fetch, n skip, q skip all remaining.
+Everything else with a newer AUR version (merged, or rejected) is offered
+one at a time, after a list when there is more than one: y fetch, n skip,
+a fetch this and all remaining, q skip all remaining. End of input counts
+as q. Never installs anything.
+
+Ends with a one-line summary. Every package that could not be checked or
+fetched is named with the reason; so is every package whose version
+cannot be compared (a `pkgver()` function, or not on the AUR). Exit
+status: 0 nothing to review; 10 at least one review is pending; 1 a check
+or fetch failed.
 
 ## Flags
 

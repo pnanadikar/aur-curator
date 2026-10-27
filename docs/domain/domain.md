@@ -1,6 +1,6 @@
 # Domain Model: aur-curator
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-26
 > Status: Active
 > Companion docs: architecture.md, interfaces.md, workflow.md, risk-analysis.md
 > Code: `internal/domain`
@@ -123,7 +123,7 @@ Catalog).
 | --- | --- | --- |
 | name | Canonical package name | Stored — `PackageName` |
 | lifecycleState | Current workflow state | Derived — § Lifecycle, `internal/lifecycle` |
-| localVersion | Version at the curated commit | Derived — from a committed `PKGBUILD`, never the working tree (`workflow.md` § Local Version) |
+| localVersion | Version at the reviewed commit (`Review.UpstreamCommit`), whatever the review state | Derived — from a committed `PKGBUILD`, never the working tree (`workflow.md` § Local Version) |
 | upstreamVersion | Latest upstream version | Derived |
 | origin / upstream | Personal Gitea repository / AUR repository | Convention — the `origin` and `upstream` remotes of the clone at `<rootPath>/<name>`; not stored (§ GitRepository) |
 | currentReview | Active review, if any | Relationship — `ReviewStore.Get(name)` |

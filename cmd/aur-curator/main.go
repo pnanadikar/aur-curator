@@ -25,7 +25,6 @@ import (
 	"github.com/pramod/aur-curator/internal/git"
 	"github.com/pramod/aur-curator/internal/help"
 	"github.com/pramod/aur-curator/internal/instancelock"
-	"github.com/pramod/aur-curator/internal/lifecycle"
 	"github.com/pramod/aur-curator/internal/review"
 	"github.com/pramod/aur-curator/internal/store"
 	"github.com/pramod/aur-curator/internal/trace"
@@ -216,8 +215,10 @@ func runImport(
 	release := acquireWorkspaceLock(cfg, "aur-curator import")
 	defer func() { _ = release() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	// No deadline on the command as a whole: Import runs under its own
+	// git.ImportTimeout, and each later step under git.GitTimeout, so a
+	// timeout names the step that hung and its limit (#417).
+	ctx := context.Background()
 
 	if err := provider.Import(ctx, domain.PackageName(name)); err != nil {
 		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "import", name, "status", "failed", "error", err.Error())
@@ -228,7 +229,9 @@ func runImport(
 
 	d := deps.NewDependencies(cfg, provider, pkgCatalog)
 
-	rv, err := d.Reviews.EnsureReview(ctx, domain.PackageName(name))
+	reviewCtx, cancelReview := git.GitTimeoutCtx(ctx)
+	rv, err := d.Reviews.EnsureReview(reviewCtx, domain.PackageName(name))
+	cancelReview()
 	if err != nil {
 		// The package is imported; only its first review is missing, and
 		// the Dashboard creates it (EnsureReview) the next time it loads
@@ -241,7 +244,9 @@ func runImport(
 
 	autoAnalyzeMsg := ""
 	if cfg.AutoAnalyzeAfterImport {
-		if analysis, err := d.Reviews.RunAnalyzers(ctx, domain.PackageName(name), rv.ID); err != nil {
+		analyzeCtx, cancelAnalyze := git.GitTimeoutCtx(ctx)
+		defer cancelAnalyze()
+		if analysis, err := d.Reviews.RunAnalyzers(analyzeCtx, domain.PackageName(name), rv.ID); err != nil {
 			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "import", name, "status", "success", "auto_analyze", "failed", "error", err.Error())
 			autoAnalyzeMsg = fmt.Sprintf(" Analysis failed: %v.", err)
 		} else {
@@ -781,9 +786,9 @@ func runCheck(
 	os.Exit(0)
 }
 
-// runUpdate checks all curated packages for updates, categorizes them
-// by lifecycle state, and interactively confirms which to fetch and
-// queue for review. Never installs anything.
+// runUpdate checks every reviewed package's reviewed commit against the
+// AUR (workflow.md § Local Version, #426) and interactively confirms
+// which to fetch and queue for review. Never installs anything.
 func runUpdate(
 	cfg domain.WorkspaceConfig,
 	pkgCatalog catalog.PackageCatalog,
@@ -793,9 +798,12 @@ func runUpdate(
 	defer func() { _ = release() }()
 
 	d := deps.NewDependencies(cfg, provider, pkgCatalog)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	ctx = trace.Start(ctx, "update")
+	// No deadline on the run as a whole: each call that can hang has its
+	// own — every git call git.GitTimeout, the AUR request the client's
+	// timeout, each FetchAndReview its own GitTimeout (#409) — so a
+	// timeout names the call that hung and its limit (#417), and time
+	// spent at a prompt counts against nothing (#416).
+	ctx := trace.Start(context.Background(), "update")
 
 	// Step 1: Fetch catalog.
 	packages, err := pkgCatalog.Packages(ctx)
@@ -810,203 +818,66 @@ func runUpdate(
 		os.Exit(0)
 	}
 
-	// Step 2: Categorize packages by lifecycle state.
-	type pendingUpdate struct {
-		pkg          domain.PackageName
-		aurVer       string
-		localVer     string
-		localUnknown bool
-	}
-
-	var bucket2NotStale []domain.PackageName
-	var bucket2Stale []domain.PackageName // each entry holds pkg + its versions
-	var bucket2StaleVersions []pendingUpdate
-	var bucket3Candidates []pendingUpdate
-
-	// Single AUR RPC for all packages.
+	// Step 2: One AUR request. Each package's local version is the
+	// version at its reviewed commit, read by the resolver the Dashboard
+	// uses too (workflow.md § Local Version, #426); the packages are then
+	// sorted by what a fetch would discard.
 	aurClient := aurinfo.NewClient("https://aur.archlinux.org/rpc/", 15*time.Second, aurinfo.NewGitLocalVersionResolver(provider, d.ReviewDB))
-	aurVersions, err := aurClient.FetchAURVersions(ctx, packages)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "update: AUR fetch failed: %v\n", err)
-		_ = errorlog.Log(ctx, cfg.RootPath, "update", "AUR fetch failed: "+err.Error())
+	check := aurClient.BulkCheck(ctx, packages)
+	if check.Err != nil {
+		fmt.Fprintf(os.Stderr, "update: AUR fetch failed: %v\n", check.Err)
+		_ = errorlog.Log(ctx, cfg.RootPath, "update", "AUR fetch failed: "+check.Err.Error())
 		os.Exit(1)
 	}
-	trace.Log(ctx, "update", "phase", "aur_fetch", "count", len(aurVersions))
+	trace.Log(ctx, "update", "phase", "aur_fetch", "count", len(check.Pairs))
 
-	for _, pkg := range packages {
-		review, reviewErr := d.ReviewDB.Get(pkg)
-		if reviewErr != nil {
-			if errors.Is(reviewErr, domain.ErrNotFound) {
-				continue // NotReviewed — excluded entirely
-			}
-			// Unexpected error — treat as NotReviewed (skip)
-			continue
+	plan := planUpdate(check.Pairs, d.ReviewDB.Get, func(pkg domain.PackageName, commit string) (bool, error) {
+		if commit == "" {
+			return false, nil
 		}
+		gitCtx, cancelGit := git.GitTimeoutCtx(ctx)
+		defer cancelGit()
+		// On error planUpdate treats the approval as not merged
+		// (fail-closed), asks about it on its own, and names the error.
+		return provider.IsMerged(gitCtx, pkg, commit)
+	})
+	summary := newUpdateSummary(len(packages), plan)
 
-		// Build lookup for DeriveState.
-		// We don't need build records for categorization here —
-		// the packet says bucket 2 is ReviewPending and bucket 3
-		// is everything else. We derive that from the review status.
-		var isMerged bool
-		if review.UpstreamCommit != "" {
-			isMerged, _ = provider.IsMerged(ctx, pkg, review.UpstreamCommit)
-		}
-
-		state := lifecycle.DeriveState(lifecycle.Inputs{
-			ReviewStatus: review.Status,
-			HasReview:    true,
-			IsMerged:     isMerged,
-		})
-
-		aurVer := aurVersions[pkg]
-
-		switch state {
-		case lifecycle.ReviewPending:
-			// Bucket 2: read PKGBUILD at review's UpstreamCommit.
-			pkgbuild, fileErr := provider.FileAtCommit(ctx, pkg, review.UpstreamCommit, "PKGBUILD")
-			if fileErr != nil {
-				// Can't read — skip this package
-				continue
-			}
-			localVer, localUnknown := aurinfo.ExtractFullVersion(pkgbuild)
-
-			stale, _ := aurinfo.CompareVersions(aurVer, localVer)
-			if stale {
-				bucket2Stale = append(bucket2Stale, pkg)
-				bucket2StaleVersions = append(bucket2StaleVersions, pendingUpdate{pkg: pkg, aurVer: aurVer, localVer: localVer, localUnknown: localUnknown})
-			} else {
-				bucket2NotStale = append(bucket2NotStale, pkg)
-			}
-
-		case lifecycle.Approved, lifecycle.Merged, lifecycle.Built, lifecycle.Rejected:
-			// Bucket 3: compare AUR against local master PKGBUILD.
-			localVer, localUnknown := parseLocalMasterVersion(ctx, provider, pkg)
-			stale, _ := aurinfo.CompareVersions(aurVer, localVer)
-			if stale {
-				bucket3Candidates = append(bucket3Candidates, pendingUpdate{pkg: pkg, aurVer: aurVer, localVer: localVer, localUnknown: localUnknown})
-			}
-		}
-		// DeriveState is called without build inputs here, so merged
-		// packages derive as Merged and land in bucket 3 whatever their
-		// build state.
+	// Step 3: Pending reviews the AUR has not moved past.
+	for _, pkg := range plan.pendingUpToDate {
+		fmt.Printf("%s: review pending, no newer AUR version.\n", pkg)
 	}
 
-	// Step 3: Output bucket 2 informational lines first.
-	for _, pkg := range bucket2NotStale {
-		fmt.Printf("%s: review pending, no newer upstream version — no action needed.\n", pkg)
-	}
-
-	// Step 4: Output bucket 2 stale prompts.
-	reader := bufio.NewReader(os.Stdin)
-	for i, pkg := range bucket2Stale {
-		v := bucket2StaleVersions[i]
-		fmt.Printf("%s: pending review is stale — AUR has moved to %s since this review was created at %s. Confirming will discard the current review's notes/findings. Proceed? [y/n] ", pkg, v.aurVer, v.localVer)
-		answer, err := reader.ReadString('\n')
-		if err != nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y") {
-			continue
-		}
-		if res, err := review.FetchAndReview(ctx, provider, d.Reviews, pkg); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: fetch failed: %v\n", pkg, err)
+	// Step 4: Stale packages. Those whose fetch would discard something —
+	// a pending review, or an approval never merged — are asked one by
+	// one with [y/n/q]; the rest, merged or rejected, are offered with
+	// [y/n/a/q] (#424). q or end of input skips everything left (#402).
+	fetch := func(pkg domain.PackageName) {
+		res, err := review.FetchAndReview(ctx, provider, d.Reviews, pkg)
+		summary.recordFetch(os.Stdout, os.Stderr, pkg, res, err)
+		switch {
+		case err != nil:
 			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(pkg), "fetch", "failed", "error", err.Error())
-		} else {
-			printUpdateFetch(pkg, res)
+		case res.EmptyResult:
+			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(pkg), "fetch", "failed", "error", "upstream commit not readable")
+		default:
 			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(pkg), "fetch", "success")
 		}
 	}
-
-	// Step 5: Bucket 3 batch list.
-	if len(bucket3Candidates) > 0 {
-		fmt.Println("\n=== Packages with updates available ===")
-		for i, c := range bucket3Candidates {
-			fmt.Printf("  [%d] %s: %s -> %s", i+1, c.pkg, c.localVer, c.aurVer)
-			if c.localUnknown {
-				fmt.Printf(" (local version unknown)")
-			}
-			fmt.Println()
-		}
-
-		fmt.Print("(y)es, (n)o, (a)ll remaining, (q)uit? ")
-		answer, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println()
-			fmt.Println("Aborted.")
-			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", "batch", "status", "aborted", "reason", "read_error")
-			os.Exit(0)
-		}
-		answer = strings.ToLower(strings.TrimSpace(answer))
-
-		// Process remaining candidates based on answer.
-		var startIdx int
-		switch answer {
-		case "q":
-			// Quit — skip all remaining
-			fmt.Println("Aborted.")
-			_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", "batch", "status", "aborted", "reason", "user_quit")
-
-		case "a":
-			// All remaining — process all from start
-			startIdx = 0
-			for _, c := range bucket3Candidates[startIdx:] {
-				if res, err := review.FetchAndReview(ctx, provider, d.Reviews, c.pkg); err != nil {
-					fmt.Fprintf(os.Stderr, "%s: fetch failed: %v\n", c.pkg, err)
-					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "failed", "error", err.Error())
-				} else {
-					printUpdateFetch(c.pkg, res)
-					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "success")
-				}
-			}
-
-		default:
-			// Individual yes/no — process each from startIdx
-			for _, c := range bucket3Candidates[startIdx:] {
-				fmt.Printf("%s: proceed? [y/n] ", c.pkg)
-				yes, err := reader.ReadString('\n')
-				if err != nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(yes)), "y") {
-					fmt.Printf("%s: skipped.\n", c.pkg)
-					continue
-				}
-				if res, err := review.FetchAndReview(ctx, provider, d.Reviews, c.pkg); err != nil {
-					fmt.Fprintf(os.Stderr, "%s: fetch failed: %v\n", c.pkg, err)
-					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "failed", "error", err.Error())
-				} else {
-					printUpdateFetch(c.pkg, res)
-					_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", string(c.pkg), "fetch", "success")
-				}
-			}
-		}
+	reader := bufio.NewReader(os.Stdin)
+	reason, readErr := offerUpdates(reader, os.Stdout, plan.individual, plan.batch, fetch)
+	if reason != "" {
+		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "update", "batch", "status", "aborted", "reason", reason)
+	}
+	if readErr != nil {
+		summary.readErr = readErr
+		_ = errorlog.Log(ctx, cfg.RootPath, "update", "reading the answer failed: "+readErr.Error())
 	}
 
-	fmt.Println("Update complete.")
-}
-
-// printUpdateFetch reports the outcome of one update fetch: whether a new
-// review was started for the package (#405).
-func printUpdateFetch(pkg domain.PackageName, res review.FetchResult) {
-	switch {
-	case res.EmptyResult:
-		fmt.Printf("%s: fetch complete — could not read the upstream commit; no review step ran.\n", pkg)
-	case res.ReviewStarted:
-		c := res.ReviewCommit
-		if len(c) > 7 {
-			c = c[:7]
-		}
-		fmt.Printf("%s: fetch complete — review started for %s.\n", pkg, c)
-	default:
-		fmt.Printf("%s: fetch complete — no new upstream commit.\n", pkg)
+	// Step 5: Say what happened (#402).
+	for _, f := range summary.failed {
+		_ = errorlog.Log(ctx, cfg.RootPath, "update", string(f.pkg)+": "+f.reason)
 	}
-}
-
-// parseLocalMasterVersion reads the PKGBUILD for a package from local master
-// and extracts the pkgver value. Returns the version string and a flag
-// indicating if parsing failed.
-func parseLocalMasterVersion(ctx context.Context, provider git.Provider, pkg domain.PackageName) (string, bool) {
-	head, err := provider.LocalHeadCommit(ctx, pkg)
-	if err != nil {
-		return "", true
-	}
-	content, err := provider.FileAtCommit(ctx, pkg, head, "PKGBUILD")
-	if err != nil {
-		return "", true
-	}
-	return aurinfo.ExtractFullVersion(content)
+	summary.print(os.Stdout, os.Stderr)
+	os.Exit(summary.exitCode())
 }

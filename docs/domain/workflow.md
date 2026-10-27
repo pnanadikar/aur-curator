@@ -1,6 +1,6 @@
 # Package Lifecycle
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-27
 > Status: Active
 > Companion docs: domain.md, tui-review.md, developer-guide.md,
 > git-command-walkthrough.md (the git commands behind each step)
@@ -452,31 +452,141 @@ Import Failure above.
 
 ## Local Version: Git-Committed, Not Working Tree
 
-Wherever a package's "local version" is needed for a staleness or update
-comparison, it means the PKGBUILD **committed** in git, read through the
-Git provider (`LocalHeadCommit` + `FileAtCommit`), and the version parsed
-from that content. It never means the PKGBUILD file in the package
-directory's working tree.
+A package's **local version** is the version in the PKGBUILD at the commit
+its current review covers (`Review.UpstreamCommit`), whatever the review's
+state: Pending, Approved, Rejected, or Approved and merged. It is read
+from git through the Git provider (`FileAtCommit`), never from the
+PKGBUILD file in the package directory's working tree. A package with no
+review has no local version (unknown).
 
-- **Review Pending:** read at `Review.UpstreamCommit` — the commit under
-  review, since HEAD may predate it.
-- **Every other state:** read at local `master` HEAD — the last merged
-  commit, and what the next Build uses.
+Every comparison with the AUR uses it, and it answers one question: has
+the AUR moved past what is under review? If it has, a Fetch brings
+something new: a new upstream commit replaces the stored review
+(§ Transition Matrix, note 2; #405). What is still to be done with the
+reviewed commit (Review, Merge, Build, …) is shown by the lifecycle state
+and its Next Action, not by the version comparison.
 
-**Why:** Build clones local `master` HEAD into a disposable directory and
-never reads the working tree, so an uncommitted edit to a PKGBUILD has no
-effect on what is built. A local version read from disk could disagree
-with what Build would produce: a false signal about real state. An
+**Version string:** the local version is written as the AUR writes it,
+`[epoch:]pkgver-pkgrel`, from the PKGBUILD's plain `epoch`, `pkgver` and
+`pkgrel` assignments. The epoch is left out when it is absent or 0, as the
+AUR does. The version cannot be read (unknown) when `pkgver` or `pkgrel`
+is missing, or when `epoch`, `pkgver` or `pkgrel` is computed rather than
+assigned (#433).
+
+**Different, not older:** the AUR has moved past the reviewed commit when
+the two versions differ. They are not ordered: the reviewed commit comes
+from the AUR's own history, so an AUR version that differs from it, older
+or newer, belongs to a later AUR commit.
+
+**Why the reviewed commit, not local `master`:** `master` holds only what
+has been merged. Comparing it with the AUR mixes two things: the AUR
+moving, and reviewed work not merged yet. An approved review that is not
+merged already covers the AUR's version, so a comparison with `master`
+offers a Fetch that finds nothing, on every check; a rejected review is
+offered for as long as the rejected version stays current on the AUR
+(#426).
+
+**Why committed, not the working tree:** Build clones local `master` HEAD
+into a disposable directory and never reads the working tree, so an
+uncommitted edit to a PKGBUILD has no effect on what is built. An
 uncommitted edit has also not been through Review; reacting to it would
 mean reacting to unreviewed changes. So an uncommitted edit is, by design,
-invisible to every staleness and update check until it is committed.
+invisible to every staleness and update check.
 
-Consumers: the `update` command (`parseLocalMasterVersion` and the
-review-pending check in `cmd/aur-curator/main.go`) and the Dashboard's AUR
-check (`aurinfo.NewGitLocalVersionResolver`, since #231). New code that
-needs a local version uses the same resolution. If working-tree state is
-ever genuinely needed, it is a separate, explicitly named concept — never
-substituted for "local version".
+Consumers: the `update` command and the Dashboard's AUR check (Available
+column, AUR update card), both through `aurinfo.NewGitLocalVersionResolver`.
+New code that needs a local version uses the same resolver. If the version
+on local `master`, or working-tree state, is ever genuinely needed, it is
+a separate, explicitly named concept — never substituted for "local
+version".
+
+## Update
+
+`aur-curator <config-file> update` is the daily step after
+`pacman -Syu`: it checks every curated package against the AUR, offers a
+Fetch where the AUR has moved past the reviewed commit, and ends by
+saying what happened. Its exit status tells a wrapper whether there is
+anything to review. It is CLI-only, takes the workspace lock, and never
+installs anything.
+
+### Scan
+
+One AUR request covers every curated package; each package's local
+version is read as in § Local Version. If the catalog cannot be read or
+the AUR request fails, `update` stops before asking anything (exit 1).
+
+Each package ends the scan as one of:
+
+| Outcome | When | Reported |
+| --- | --- | --- |
+| Up to date | The AUR has not moved past the local version | Counted |
+| Stale | The AUR has moved past the local version | Offered (§ Offer) |
+| Not checked | The local version cannot be read from the PKGBUILD (§ Local Version: a `pkgver()` function, a computed `epoch`, `pkgver` or `pkgrel`, or a missing `pkgver` or `pkgrel`), or the package is not on the AUR | Named with the reason. Does not affect the exit status: it is a property of the package, true on every run, not a failure of this one. |
+| Check failed | No Review record; the review cannot be read; the review has no upstream commit; the PKGBUILD at that commit cannot be read (a timeout included); or, for an approved review, whether its commit is merged cannot be checked | Named with the reason. Exit 1. |
+
+A package whose merge check failed is still offered if it is stale: it
+is treated as not merged (fail-closed) and asked about on its own
+(§ Offer), and the failure is named.
+
+A package with a pending review that the AUR has not moved past prints
+`<pkg>: review pending, no newer AUR version.`
+
+### Offer
+
+A Fetch that brings a new upstream commit replaces the stored review with
+a new Pending one (§ Transition Matrix, note 2). Stale packages are
+offered in two groups, by what that would discard:
+
+1. **Asked one at a time, with a warning** — a pending review (its notes
+   and findings), or an approved review not merged yet (the approval).
+   Prompt: `[y/n/q]`.
+2. **Nothing to discard** — approved and merged, or rejected. Listed
+   first when there is more than one, then asked one at a time. Prompt:
+   `[y/n/a/q]`.
+
+| Answer | Meaning |
+| --- | --- |
+| `y`, `yes` | Fetch this package |
+| `n`, `no` | Skip this package |
+| `a`, `all` | Group 2 only: fetch this package and every remaining one in group 2 without asking |
+| `q`, `quit` | Skip this package and every remaining one, in both groups |
+
+Answers are case-insensitive. Anything else is asked again with a hint.
+End of input (EOF) is `q`. Any other error reading the answer is `q` and
+a failure (exit 1). Packages skipped by `q` are named:
+`Aborted. Skipped: a, b.`
+
+Each Fetch prints its outcome: a review was started for the new commit,
+there was no new upstream commit, or it failed with the reason. A Fetch
+that ran but could not read the upstream commit (no review step ran)
+counts as failed.
+
+### Summary and Exit Status
+
+The last line answers: did anything change, and is there anything to
+review?
+
+- Every package up to date (nothing stale, not checked or failed):
+  `All N curated packages match the AUR.`
+- Otherwise one line, with only the non-zero parts, in this order:
+  `Fetched 2 (new reviews pending: yay, broot); 1 skipped; 1 failed; 1 not checked; 3 up to date.`
+  "Fetched" counts Fetches that completed; the names are those that
+  started a review. "Skipped" counts packages answered `n` or skipped by
+  `q`.
+
+Before the summary line, every failed package is named with its reason
+(stderr), and every not-checked package with its reason (stdout).
+"Update complete." is no longer printed.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Completed. Nothing failed and no curated package has a Pending review. |
+| 10 | Completed. Nothing failed, and at least one curated package has a Pending review when `update` ends: started by this run, already pending, or stale and not fetched. Open the TUI to review. |
+| 1 | A check or a Fetch failed, reading an answer failed, or `update` could not start (workspace lock held, catalog unreadable, AUR request failed). Takes precedence over 10. |
+| 2 | Usage error. |
+
+An approved review that is not merged does not make the exit 10: what is
+left there is a merge, not a review.
 
 ## Check (Consistency)
 

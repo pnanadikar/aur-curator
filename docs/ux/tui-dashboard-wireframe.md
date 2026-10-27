@@ -1,6 +1,6 @@
 # TUI Dashboard Wireframe
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-26
 > Status: Active
 > Companion docs: ui-overview.md, domain.md, workflow.md, tui-package-details.md
 
@@ -160,8 +160,10 @@ pacman from the local repository (`workflow.md` § Installation, #351).
 Whether the AUR has a newer version than the one already **fetched**,
 i.e. whether a Fetch would bring something new. An update that is already
 fetched and waiting for review is shown by `↑N` and the Review Pending
-state, not here. The local version is read from git at the fetched commit
-(`workflow.md` § Local Version), never from the working tree.
+state, not here; one that is approved but not merged, by the Approved
+state and its Merge Next Action. The local version is read from git at
+the commit the current review covers (`workflow.md` § Local Version),
+never from the working tree or local `master`.
 
 | Value | Meaning |
 | --- | --- |

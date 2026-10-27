@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pramod/aur-curator/internal/domain"
 )
@@ -22,6 +23,11 @@ func TestImportFailureGuidance401(t *testing.T) {
 	const dir = "remove the local directory /ws/yay"
 	boom := errors.New("boom")
 	timeout := fmt.Errorf("git: %w", context.DeadlineExceeded)
+	// labelled is a timeout as the runner reports it since #417.
+	expired, cancelExpired := WithTimeout(context.Background(), time.Millisecond)
+	defer cancelExpired()
+	<-expired.Done()
+	labelled := fmt.Errorf("git [clone]: %w", Interrupted(expired, errors.New("signal: killed")))
 
 	// runnerErrs index: 0 clone, 1 rename origin, 2 add origin,
 	// 3 symbolic-ref, 4 detach … 9 commit.
@@ -45,6 +51,8 @@ func TestImportFailureGuidance401(t *testing.T) {
 		{name: "resolve path fails", catalogErr: boom, want: "Before retrying, " + gitea + "."},
 		{name: "clone fails", runnerErrs: at(0, boom), want: "Before retrying, " + gitea + "."},
 		{name: "clone times out", runnerErrs: at(0, timeout), wantTimeout: true,
+			want: "Before retrying, " + gitea + " and " + dir + " if it exists (the clone was interrupted)."},
+		{name: "clone times out, labelled by the runner", runnerErrs: at(0, labelled), wantTimeout: true,
 			want: "Before retrying, " + gitea + " and " + dir + " if it exists (the clone was interrupted)."},
 		{name: "rename origin fails", runnerErrs: at(1, boom), want: "Before retrying, " + gitea + " and " + dir + "."},
 		{name: "detect branch fails", runnerErrs: at(3, boom), want: "Before retrying, " + gitea + " and " + dir + "."},
@@ -99,8 +107,8 @@ func TestImportFailureGuidance401(t *testing.T) {
 			if tc.want != "" && !strings.HasSuffix(lines[0], "; "+tc.want) {
 				t.Fatalf("errors.log line lacks the guidance: %q", lines[0])
 			}
-			if tc.wantTimeout && !strings.Contains(lines[0], "timed out after") {
-				t.Fatalf("errors.log line does not say it timed out: %q", lines[0])
+			if tc.wantTimeout && strings.Count(lines[0], "timed out") != 1 {
+				t.Fatalf("errors.log line should say it timed out exactly once: %q", lines[0])
 			}
 		})
 	}

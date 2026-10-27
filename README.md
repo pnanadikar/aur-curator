@@ -249,6 +249,16 @@ Run `aur-curator --help` for flags and details.
 - Run `aur-curator <config> update`, or Fetch in the TUI, to pick up new
   AUR commits. Each update opens a new review showing exactly what changed
   since the last one you reviewed.
+- `update` ends with a one-line summary, and names every package it could
+  not check or fetch, with the reason. Its exit status says whether there
+  is anything to do:
+
+  | Exit | Meaning |
+  | --- | --- |
+  | 0 | Nothing to review |
+  | 10 | At least one review is pending — open the TUI |
+  | 1 | A check or fetch failed (named above the summary) |
+
 - Review, merge, build, confirm and publish as above.
 - Upgrade with `sudo pacman -Syu`, as for any other repository.
 - To stop curating a package, run `aur-curator <config> remove
