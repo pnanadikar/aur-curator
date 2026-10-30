@@ -2,6 +2,9 @@ package git
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os/exec"
 
 	"github.com/pramod/aur-curator/internal/domain"
 )
@@ -15,24 +18,34 @@ import (
 // to upstream advancing after the merge, unlike CommitsBehind which
 // only answers "how far behind is master from upstream's current tip."
 //
-// On any failure (missing commit, repository errors, no master
-// branch, or inability to resolve the repository path) returns
-// (false, nil) — fail-closed. This is a deliberate deviation from
-// the wrapped-error convention used at all other provider call
-// sites; IsMerged treats any uncertainty as "not merged."
+// Only git's own "not an ancestor" answer (exit code 1) is (false, nil).
+// Any other failure — the repository path cannot be resolved, the commit
+// or master is missing, git times out — is (false, err): the merge state
+// is unknown, not "not merged". Callers treat an error as not merged
+// (fail-closed) and report it (#462).
 func (p *provider) IsMerged(ctx context.Context, packageName domain.PackageName, reviewedCommit string) (bool, error) {
 	repo, err := p.repoPath(ctx, packageName)
 	if err != nil {
-		return false, nil // fail-closed: can't resolve repo → not confirmed merged
+		return false, fmt.Errorf("resolve repository %q: %w", packageName, err)
 	}
 
-	// Check if reviewedCommit is an ancestor of (or equal to) master.
-	// `git merge-base --is-ancestor A B` returns 0 if A is an ancestor of B.
-	// This handles the equality case too (a commit is its own ancestor).
+	// `git merge-base --is-ancestor A B` exits 0 if A is an ancestor of
+	// B (a commit is its own ancestor), 1 if it is not, and something
+	// else on an error.
 	_, err = p.runner.Run(ctx, repo, "merge-base", "--is-ancestor", reviewedCommit, "master")
-	if err != nil {
-		return false, nil // fail-closed: git error → not confirmed merged
+	if err == nil {
+		return true, nil
 	}
+	if isExitCode(err, 1) {
+		return false, nil
+	}
+	return false, fmt.Errorf("merge check %q: %w", packageName, err)
+}
 
-	return true, nil
+// isExitCode reports whether err comes from a command that ran to the end
+// and exited with code. A command killed by a timeout or a cancel reports
+// exit code -1, so it never matches.
+func isExitCode(err error, code int) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == code
 }

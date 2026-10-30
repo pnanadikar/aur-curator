@@ -28,8 +28,9 @@ type Provider interface {
 	// IsMerged reports whether the reviewed commit (reviewedCommit) has
 	// been incorporated into local master using `git merge-base
 	// --is-ancestor`. The reviewedCommit is Review.UpstreamCommit — the
-	// specific commit that was reviewed and approved. Returns false on
-	// any git failure — fail-closed for safety.
+	// specific commit that was reviewed and approved. Only git's "not an
+	// ancestor" answer is (false, nil); any other failure is (false, err),
+	// which callers treat as not merged (fail-closed) and report (#462).
 	IsMerged(ctx context.Context, packageName domain.PackageName, reviewedCommit string) (bool, error)
 
 	// Diff returns the live comparison of local master with

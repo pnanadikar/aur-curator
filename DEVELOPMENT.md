@@ -245,13 +245,33 @@ aur-curator follows [semantic versioning](https://semver.org/); the
 patch. The version is taken from the nearest `vMAJOR.MINOR.PATCH` tag by
 `git describe` at build time.
 
-To release, from an up-to-date `main` with everything merged:
+To release, from `main` with everything merged and pulled:
+
+```sh
+make release RELEASE=v1.2.3
+```
+
+It checks first, and stops before tagging anything if:
+- `RELEASE` is not `vMAJOR.MINOR.PATCH`;
+- you are not on `main`, the working tree has uncommitted changes, or
+  `main` differs from `origin/main` after a fetch;
+- the tag already exists, locally or on `origin`;
+- `make test` fails.
+
+Then it tags `main`, pushes the tag to `origin` (Gitea), runs `make build`,
+checks that `bin/aur-curator --version` prints the release, and runs
+`make install`. If the build, the version check or the install fails, the
+tag is already on `origin`: finish those steps by hand rather than
+running `make release` again with the same version (#464).
+
+By hand, the same release is:
 
 ```sh
 git tag -a v1.2.3 -m "v1.2.3"
 git push origin v1.2.3
 make build
 bin/aur-curator --version   # prints v1.2.3
+make install
 ```
 
 ## AGENTS.md

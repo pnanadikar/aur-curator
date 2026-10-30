@@ -12,7 +12,7 @@ PREFIX ?= $(HOME)/.local
 VERSION := $(shell git describe --tags --match 'v[0-9]*' --dirty --always)
 VERSION_LDFLAG := -X 'github.com/pramod/aur-curator/internal/version.Version=$(VERSION)'
 
-.PHONY: help build debug-build install uninstall test-build test-ui test test-race lint tracecheck vet vet-all run fmt clean
+.PHONY: help build debug-build install uninstall test-build test-ui test test-race lint tracecheck vet vet-all run fmt clean release
 
 help:
 	@printf '%s\n' \
@@ -32,6 +32,7 @@ help:
 		'  run          Run the app; pass CONFIG=/path/to/aur-curator.jsonc' \
 		'  fmt          Run gofmt across cmd/, internal/ and tools/' \
 		'  clean        Remove built artifacts in $(BIN_DIR)/' \
+		'  release      Tag main as RELEASE=vX.Y.Z, push the tag, build, check and install' \
 		'' \
 		'Version: $(VERSION)'
 
@@ -85,3 +86,31 @@ fmt:
 
 clean:
 	rm -rf $(BIN_DIR)
+
+# release tags main as $(RELEASE), pushes the tag to Gitea (origin), then
+# builds, checks the version and installs (DEVELOPMENT.md § Releases,
+# #464). Every check runs before anything is tagged. Builds and installs
+# run in sub-makes, so VERSION is read again after the tag exists.
+release:
+	@set -e; \
+	r='$(RELEASE)'; \
+	fail() { printf 'make release: %s\n' "$$1" >&2; exit 1; }; \
+	after() { fail "$$1. Tag $$r is already on origin: finish by hand, do not run make release with $$r again"; }; \
+	printf '%s\n' "$$r" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' \
+		|| fail "RELEASE must be vMAJOR.MINOR.PATCH, e.g. make release RELEASE=v1.2.3"; \
+	[ "$$(git branch --show-current)" = main ] || fail "not on main"; \
+	[ -z "$$(git status --porcelain)" ] || fail "the working tree has uncommitted changes"; \
+	git fetch --quiet origin main; \
+	[ "$$(git rev-parse main)" = "$$(git rev-parse origin/main)" ] \
+		|| fail "main differs from origin/main: pull (or push) first"; \
+	! git rev-parse --quiet --verify "refs/tags/$$r" >/dev/null || fail "tag $$r already exists locally"; \
+	[ -z "$$(git ls-remote --tags origin "refs/tags/$$r")" ] || fail "tag $$r already exists on origin"; \
+	$(MAKE) test || fail "tests failed; nothing was tagged"; \
+	git tag -a "$$r" -m "$$r"; \
+	git push origin "$$r" \
+		|| fail "pushing the tag failed; it exists only locally: retry with git push origin $$r, or remove it with git tag -d $$r"; \
+	$(MAKE) build || after "build failed"; \
+	v="$$(./$(BIN) --version)"; \
+	[ "$$v" = "$$r" ] || after "$(BIN) --version prints $$v, not $$r"; \
+	$(MAKE) install || after "install failed"; \
+	printf 'Released %s and installed it to %s/bin.\n' "$$r" "$(PREFIX)"

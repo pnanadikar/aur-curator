@@ -445,7 +445,8 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 		if msg.Status != "" {
 			status = msg.Status
 		}
-		build, _ := m.getLastSuccessBuild(msg.Pkg)
+		build, buildErr := m.getLastSuccessBuild(msg.Pkg)
+		m.logReadFailure(msg.TraceCtx, msg.Pkg, "last successful build", buildErr)
 		newState := lifecycle.DeriveState(lifecycle.Inputs{
 			ReviewStatus: status,
 			HasReview:    msg.Has,
@@ -556,7 +557,8 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 		}
 		if msg.Build != nil {
 			// Re-derive from LastSuccess per R1 (DeriveState uses last-success, not latest attempt).
-			lastSuccess, _ := m.getLastSuccessBuild(pkgName)
+			lastSuccess, buildErr := m.getLastSuccessBuild(pkgName)
+			m.logReadFailure(msg.TraceCtx, pkgName, "last successful build", buildErr)
 			if inputs, cached := m.reviewInputs[pkgName]; cached {
 				trace.Log(msg.TraceCtx, "OperationCompletedMsg", "build", "cache-hit", "pkg", pkgName)
 				newState := lifecycle.DeriveState(lifecycle.Inputs{
@@ -881,6 +883,10 @@ func (m *DashboardModel) buildSummary() map[CardID]widgets.Card {
 		bs := m.deps.BuildEngine.BuildStore()
 		if bs != nil {
 			for _, pkg := range m.packages {
+				// Not logged: this runs on every summary rebuild, so a
+				// lasting failure would be written again and again. #404
+				// moves this read into the package load, which can log it
+				// once (#462).
 				b, err := bs.Get(pkg)
 				if err == nil && b != nil {
 					builds[pkg] = b
@@ -925,6 +931,9 @@ func (m *DashboardModel) buildEntries(ctx context.Context, caller string) {
 	trace.Log(ctx, "buildEntries", "from", caller)
 	entries := make([]widgets.LifecycleEntry, len(m.packages))
 	for i, pkg := range m.packages {
+		// Not logged here: this runs on every redraw of the list and would
+		// repeat the failure that the state derivation already logged
+		// (logReadFailure, #462).
 		lastSuccess, _ := m.getLastSuccessBuild(pkg)
 		review, _ := m.reviewsByPkg[pkg]
 		lc := m.localCommits[pkg]
@@ -1170,17 +1179,21 @@ func (m *DashboardModel) UpdateFromReview(ctx context.Context, pkg domain.Packag
 	}
 	isMerged := false
 	if review.UpstreamCommit != "" && m.deps.Git != nil {
-		isMerged, _ = m.deps.Git.IsMerged(ctx, pkg, review.UpstreamCommit)
+		var err error
+		isMerged, err = m.deps.Git.IsMerged(ctx, pkg, review.UpstreamCommit)
+		m.logReadFailure(ctx, pkg, "merge state", err)
 	} else {
 		trace.Log(ctx, "skipped", "check", "IsMerged", "reason", "no-upstream-commit-or-no-git")
 	}
 	trace.Log(ctx, "UpdateFromReview", "pkg", pkg, "isMerged", isMerged, "upstreamCommit", review.UpstreamCommit)
-	build, _ := m.getLastSuccessBuild(pkg)
+	build, buildErr := m.getLastSuccessBuild(pkg)
+	m.logReadFailure(ctx, pkg, "last successful build", buildErr)
 	var headCommit string
 	if m.deps.Git != nil {
 		hc, err := m.deps.Git.LocalHeadCommit(ctx, pkg)
 		if err != nil {
 			trace.Log(ctx, "UpdateFromReview", "check", "LocalHeadCommit", "pkg", pkg, "error", err.Error())
+			m.logReadFailure(ctx, pkg, "master HEAD", err)
 		} else {
 			headCommit = hc
 		}
@@ -1242,6 +1255,7 @@ func (m *DashboardModel) LoadReviewCmd(ctx context.Context, pkg domain.PackageNa
 		}
 		review, err := m.deps.Reviews.GetReview(ctx, pkg)
 		if err != nil {
+			m.logReadFailure(ctx, pkg, "review", err)
 			return ReviewDataMsg{Pkg: pkg, Has: false, TraceCtx: ctx}
 		}
 		status := review.Status
@@ -1257,6 +1271,7 @@ func (m *DashboardModel) LoadReviewCmd(ctx context.Context, pkg domain.PackageNa
 			isMerged, isMergedErr = m.deps.Git.IsMerged(ctx, pkg, review.UpstreamCommit)
 			if isMergedErr != nil {
 				trace.Log(ctx, "ReviewDataMsg", "check", "IsMerged", "pkg", pkg, "commit", review.UpstreamCommit, "error", isMergedErr.Error())
+				m.logReadFailure(ctx, pkg, "merge state", isMergedErr)
 			}
 		}
 
@@ -1265,6 +1280,7 @@ func (m *DashboardModel) LoadReviewCmd(ctx context.Context, pkg domain.PackageNa
 			hc, err := m.deps.Git.LocalHeadCommit(ctx, pkg)
 			if err != nil {
 				trace.Log(ctx, "ReviewDataMsg", "check", "LocalHeadCommit", "pkg", pkg, "error", err.Error())
+				m.logReadFailure(ctx, pkg, "master HEAD", err)
 			} else {
 				headCommit = hc
 			}
@@ -1291,6 +1307,18 @@ func (m *DashboardModel) LoadReviewCmd(ctx context.Context, pkg domain.PackageNa
 			TraceCtx:        ctx,
 		}
 	}
+}
+
+// logReadFailure writes a failed read that a package's lifecycle state is
+// derived from to the error log (#462). The state is still derived as if
+// the read had found nothing — fail-closed, as the operations re-check
+// live — but the failure is never silent. A nil error and
+// domain.ErrNotFound (no review, no build yet) are not failures.
+func (m DashboardModel) logReadFailure(ctx context.Context, pkg domain.PackageName, what string, err error) {
+	if err == nil || errors.Is(err, domain.ErrNotFound) {
+		return
+	}
+	_ = errorlog.Logf(ctx, m.deps.Config.RootPath, "state", "read %s of %q: %v", what, pkg, err)
 }
 
 // readStateVersions reads the versions the State column shows for a
