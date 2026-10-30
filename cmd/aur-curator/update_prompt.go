@@ -10,7 +10,7 @@ import (
 	"github.com/pramod/aur-curator/internal/domain"
 )
 
-// updateCandidate is a curated package whose AUR version is newer than
+// updateCandidate is a curated package whose AUR version differs from
 // the local one, as found by the update scan.
 type updateCandidate struct {
 	pkg          domain.PackageName

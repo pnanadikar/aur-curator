@@ -1,6 +1,6 @@
 # TUI Dashboard Wireframe
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-30
 > Status: Active
 > Companion docs: ui-overview.md, domain.md, workflow.md, tui-package-details.md
 
@@ -21,28 +21,29 @@ git state and the AUR update check. No dashboard field is stored.
 Operation cancelled: duplicati-bin                                        ← toast, only while active
 aur-curator          Workspace: /home/pramod/repos/aur                    ← App header
 Last Refresh: 14:24
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ [1] Packages   [2] Repository   [3] Settings   [4] Help   [q] Quit                         │
-│ [ Packages: 6 ]  | AUR: 1 | Fetched: 2 | To review: 1 | Approved: 1 | Merged: 1 | ...      │
-│Filter: Packages  Sort: (·) Alphabetical   ( ) Lifecycle                                    │
-│> yay          Review Pending  Review    —              No     HIGH                  ↑2     │
-│  broot        Approved        Merge     —              No     LOW                   ↑1     │
-│  fd           Merged          Build     —              Older  LOW                          │
-│  bat          Built           Confirm   —              No     Not Run                      │
-│  ripgrep      Confirmed       Publish   13.0 → 14.1    No     LOW                          │
-│  units        Published       —         —              Yes    LOW      2 local             │
-│                                                                                            │
-│ ^PgDn/^PgUp Cards  ^O Sort  ENTER Open  M Merge  F Fetch  R Refresh  B Build  C ...  ? more│
-└────────────────────────────────────────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Operations                                                                                 │  ← App level
-│ ────────────────────────────────────────────────────────────────────────────────────────── │
-│   Fetch                                                                                    │
-│   Analyze                                                                                  │
-│   Build                                                                                    │
-│   Publish                                                                                  │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
-Idle                                                                                            ← status bar, App level
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ [1] Packages   [2] Repository   [3] Settings   [4] Help   [q] Quit                                                 │
+│ [ Packages: 6 ]  | AUR: 1 | Fetched: 2 | To review: 1 | Approved: 1 | Merged: 1 | ...                              │
+│Filter: Packages  Sort: (·) Alphabetical   ( ) Lifecycle                                                            │
+│  Package      State                               Next Action  Available      Published  Risk     Local  Behind    │
+│> yay          Review Pending 12.4.1-1 → 12.4.2-1  Review       —              No         HIGH            ↑2        │
+│  broot        Approved       0.44.1-1 → 0.45.0-1  Merge        —              No         LOW             ↑1        │
+│  fd           Merged                    10.1.0-1  Build        —              Older      LOW                       │
+│  bat          Built                     0.24.0-2  Confirm      —              No         Not Run                   │
+│  ripgrep      Confirmed                 13.0.0-1  Publish      14.1.1-1       No         LOW                       │
+│  units        Published                 2.24-1    —            —              Yes        LOW      2                │
+│                                                                                                                    │
+│ ^PgDn/^PgUp Cards  ^O Sort  ENTER Open  M Merge  F Fetch  R Refresh  B Build  C ...  ? more                        │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Operations                                                                                                         │  ← App level
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│   Fetch                                                                                                            │
+│   Analyze                                                                                                          │
+│   Build                                                                                                            │
+│   Publish                                                                                                          │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Idle                                                                                                                    ← status bar, App level
 ```
 
 The first box is the Dashboard's own area. The header, toast row,
@@ -50,8 +51,7 @@ Operations Panel and status bar are drawn by the App and appear on every
 screen (§ 7). `>` marks the selected row. The selected card is shown in
 brackets.
 
-The table has no column header row. Cells that would be ambiguous without
-a header label themselves (`2 local`, `↑2`).
+The row under the toolbar is the table's header row (§ 4, Header Row).
 
 ---
 
@@ -84,7 +84,7 @@ AUR, Fetched and Failed cut across them.
 | Card | Filter line | Counts packages where |
 | --- | --- | --- |
 | Packages | Packages | Always (every curated package) |
-| AUR | AUR fetch pending | The AUR has a newer version than the fetched one (§ 4, Available). Shows `?` instead of a count until the check arrives, or if it failed |
+| AUR | AUR fetch pending | The AUR has moved past the reviewed commit (§ 4, Available). Shows `?` instead of a count until the check arrives, or if it failed |
 | Fetched | Fetched (not merged) | Commits behind upstream > 0: fetched upstream commits not yet merged |
 | To review | Review Pending | State is Review Pending |
 | Approved | Approved (not merged) | State is Approved |
@@ -112,23 +112,90 @@ One row under the cards:
 
 ### 4. Package Table
 
-The main working area. One row per curated package, without a header row.
+The main working area. A header row naming the columns, then one row per
+curated package.
 
 Columns, in order:
 
 | Column | Content |
 | --- | --- |
 | Package | Package name |
-| State | Lifecycle state (`lifecycle.DeriveState`) |
+| State | Lifecycle state, followed by the versions it concerns (below) |
 | Next Action | The action the state calls for (table below) |
-| Available | Whether the AUR has something newer than the fetched version (below) |
+| Available | The AUR's version, when the AUR has moved past the reviewed commit (below) |
 | Published | `Yes` / `Older` / `No` (below) |
 | Risk | Highest finding severity, or `Not Run` (below) |
 | Local | Commits on local `master` not on upstream (below) |
-| ↑N | Commits behind upstream: fetched but not merged. Blank when 0 |
+| Behind | `↑N`: commits behind upstream, i.e. fetched but not merged. Blank when 0 |
 
 Packages without both an `origin` and an `upstream` remote are left out of
 the table. Each one is written to the error log.
+
+#### Header Row
+
+One row above the package rows, naming the columns: `Package`, `State`,
+`Next Action`, `Available`, `Published`, `Risk`, `Local`, `Behind`.
+
+- Each label starts where its column starts. `Package` starts two cells
+  in, under the package names, not under the `>` cursor.
+- State's width depends on the page: it is the longest State cell among
+  the rows shown, versions included, up to 34 cells (§ State). The header
+  uses the same width, so its labels stay over their columns as you page.
+- `Behind` labels the `↑N` count. Being the last column, it has no fixed
+  width. Without the label, `↑N` read as a misplaced Local value whenever
+  Local was blank.
+- Drawn dim, like other secondary text. No rule line under it.
+- Shown whenever the table is: also above "No packages match the current
+  filter.", so the layout does not move when a filter empties the list.
+  It is not shown while the package data is still loading, when the
+  plain list is shown instead.
+- It takes one row from the table: the page size allows for it.
+
+#### Page Size
+
+A page holds as many package rows as fit between the header row and the
+action bar, down to a single row, so the selected row is always on
+screen. `↓` on a page's last row and `↑` on its first move to the next or
+previous page (§ Interaction). When not even one row fits, the Dashboard
+shows a single line instead (§ 6).
+
+#### State
+
+The lifecycle state (`lifecycle.DeriveState`), followed by the versions
+that state is about. A version is the PKGBUILD's `[epoch:]pkgver-pkgrel`,
+written as the AUR writes it (`workflow.md` § AUR Version Check), read
+from git at a commit:
+
+| State | Shows | Version read at |
+| --- | --- | --- |
+| Not Reviewed | `Not Reviewed` | — |
+| Review Pending, Approved | `Approved 1.10.0-1 → 1.11.0-1` | The review's base commit, then its reviewed commit: the range the Review screen shows |
+| Review Pending, Approved, first review | `Review Pending → 1.11.0-1` | The reviewed commit. A first review has no base commit |
+| Rejected | `Rejected 1.11.0-1` | The reviewed commit |
+| Merged, Built, Confirmed, Published | `Merged 1.11.0-1` | Local `master` HEAD: what Build builds, and what Published compares against |
+
+- Next Action shows no versions. It always sits beside State, so the
+  same pair would show twice.
+- The versions are read when the Dashboard loads the package's review
+  data (at start, on Refresh, and after an operation), not from the AUR.
+  They show even when the AUR request fails.
+- The versions line up down the page: the state names are padded to the
+  longest one, the arrows sit in one column, and each row's own version
+  (reviewed, or `master` HEAD) starts in the same column:
+
+  ```text
+  Review Pending 1.10.0-1 → 1.11.0-1
+  Approved                → 2.27-1
+  Merged                    1.11.0-1
+  ```
+- The State column is at most 34 cells. When the page does not fit, every
+  pair drops its base version (`Approved → r345.abc1234-1`), so the arrows
+  stay in one column; a cell still too long is cut with `…`.
+- When a version cannot be read, State shows the state alone, never half
+  a pair. A version the PKGBUILD computes, or one it lacks, is a property
+  of the package (Available shows `?` for it). A failed git read is
+  written to the error log.
+- Sorting and filtering go by the state, not the versions.
 
 #### Next Action
 
@@ -157,22 +224,24 @@ pacman from the local repository (`workflow.md` § Installation, #351).
 
 #### Available
 
-Whether the AUR has a newer version than the one already **fetched**,
-i.e. whether a Fetch would bring something new. An update that is already
-fetched and waiting for review is shown by `↑N` and the Review Pending
-state, not here; one that is approved but not merged, by the Approved
-state and its Merge Next Action. The local version is read from git at
-the commit the current review covers (`workflow.md` § Local Version),
-never from the working tree or local `master`.
+Whether the AUR has moved past the commit the current review covers,
+i.e. whether a Fetch would bring something new. What is compared, every
+possible result, the limits (VCS packages included) and the decisions
+behind them are in `workflow.md` § AUR Version Check; this section only
+says how the column shows them. An update that is already fetched and
+waiting for review is shown by `↑N` and the Review Pending state, not
+here; one that is approved but not merged, by the Approved state and its
+Merge Next Action.
 
 | Value | Meaning |
 | --- | --- |
-| `x → y` | AUR has `y`, newer than the fetched `x` |
-| `→ y` | Same, when `x → y` does not fit the column (25 cells) |
-| `—` | Check succeeded; nothing newer on the AUR |
-| `not on AUR` | The AUR does not know the package (deleted or renamed) |
-| `?` | Unknown: the whole check failed, or the local version could not be determined |
+| `y` | Stale: the AUR has `y`, which differs from the reviewed commit's version (State shows that one). `y` is not necessarily higher |
+| `—` | Up to date |
+| `not on AUR` | Not on the AUR |
+| `?` | Version not readable, local version failed, or request failed |
 | `…` | Check still running |
+
+A version longer than the column (25 cells) is cut with `…`.
 
 Only a completed, successful check may read as `—`. While the check has
 not arrived or has failed, the AUR Update card shows `?` instead of a
@@ -206,14 +275,13 @@ review with no findings never shows a severity.
 #### Local
 
 Commits on local `master` that are not on upstream (`workflow.md` § Local
-Commits Not on Upstream). The table has no header row, so the cell labels
-itself:
+Commits Not on Upstream).
 
 | Value | Meaning |
 | --- | --- |
 | (blank) | None |
-| `N local` | N commits not on upstream |
-| `? local` | The check failed |
+| `N` | N commits not on upstream |
+| `?` | The check failed |
 
 Local commits never disable Build: pressing Build runs the Build
 confirmation flow, which asks (`workflow.md` § Build Confirmation, #320).
@@ -262,6 +330,15 @@ state while retrying; otherwise the rows update in place.
 | Package list failed to load | `Error loading packages: <error>` (press `R` to retry) |
 | No curated packages | `No curated packages found.` |
 | Review data still loading | A plain list of package names, each with its state or `(loading...)`; cards, toolbar and columns appear once every package's data has arrived |
+| Terminal too short for one package row | `Terminal too small: At least <N> lines and <M> columns recommended.` in place of the Dashboard |
+
+In the "terminal too small" line, `<N>` is the terminal height at which a
+page holds 6 package rows, and `<M>` the width at which the Dashboard's
+widest line is not cut. Both are worked out from what is on screen at the
+time, so they change with the number of Operations Panel lines, the
+action-bar help and the versions in the State column. Only the height
+brings up the line: a terminal too narrow cuts the rows on the right
+(#457 makes the columns adapt).
 
 ---
 
@@ -290,7 +367,8 @@ Drawn by the App, around every screen, not by the Dashboard:
 ## Interaction
 
 - `↑` / `↓` or `k` / `j` move the table cursor. `↓` on the last row of a
-  full page moves to the next page.
+  full page moves to the next page; `↑` on the first row of any page but
+  the first moves to the previous page, onto its last row (#447).
 - `Enter` opens Package Details for the selected row.
 - Fetch, Build and other operations keep running while you navigate.
 - There is no multi-select and no Tab focus cycle on this screen. `Tab`

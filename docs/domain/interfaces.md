@@ -343,8 +343,9 @@ Produce installable packages from a prepared workspace.
 - report build results (`BuildResult`)
 - expose build artifacts
 
-Current implementation: `MakepkgBuilder`, always used (the
-`builderBackend` config key is not read yet — #408).
+Current implementation: `MakepkgBuilder`, always used. `config.Load`
+accepts only `makepkg` for the `builderBackend` config key (#408); a new
+backend adds its value there and its selection in `NewDependencies`.
 
 Possible future implementations:
 

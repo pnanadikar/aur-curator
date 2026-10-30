@@ -3,84 +3,58 @@
 For building and contributing, start with [`DEVELOPMENT.md`](../DEVELOPMENT.md). 
 For using aur-curator, see the [README](../README.md).
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-28
 > Status: Active
 
-This describes how the docs in this project are organized and why, since
-the doc set is intended to feed both human review and AI coding assistants
-(a heavy-duty proprietary model for cross-document architecture work, and
-a resource-limited local model for narrow implementation tasks).
+How the docs in this project are organized, and which of them are a source
+of truth.
 
-## Canonical vs. Derived
+## Canonical and History
 
-Docs fall into two kinds. This distinction is a convention, not a folder —
-group membership below tells you which kind a doc is.
+**Canonical** docs are hand-authored, cross-referenced and the source of
+truth for behaviour: code is expected to match them, not the other way
+round. If code and a canonical doc disagree, that is a bug in one of them;
+which one is decided explicitly, never silently. A change to documented
+behaviour lands in the canonical docs first, on `main`, reconciled across
+every doc it affects, before the code branch is cut.
 
-**Canonical** — hand-authored, cross-referenced, source of truth. Open
-questions live here. May say "see domain.md §X" freely. Edited directly,
-one document at a time, with changes reconciled across all affected files.
+**History** docs record how the project got here: plans, packets, prompts,
+reviews and superseded designs. They are kept for reference, are not a
+source of truth, and nothing is implemented from them. They are excluded
+from the public GitHub mirror.
 
-**Derived** — generated from canonical docs, self-contained (no
-cross-references — everything a consumer needs is inlined), narrow scope.
-Never hand-edited directly; regenerated when the canonical docs they draw
-from change. This mirrors the app's own "State is Derived Whenever
-Possible" principle (architecture.md) — derived docs are a regeneratable
-cache, not a duplicate source of truth.
+Issues, ADRs and the backlog live in Gitea (ADRs are `type/adr` issues,
+cited by number as `#NNN`), not in `docs/`.
 
-## Foundation Documents
+## Canonical Documents
 
-The following canonical documents together define the project's
-architectural foundation. They establish the concepts, contracts and
-behaviour that the implementation is expected to conform to.
+| Folder | Contents | What it defines |
+| --- | --- | --- |
+| `domain/` | `domain.md`, `architecture.md`, `interfaces.md`, `workflow.md`, `analyzer-specs.md`, `risk-analysis.md` | The domain and architectural contract: entities, lifecycle, workflows, analyzer behaviour, interface responsibilities |
+| `app-contract/` | `developer-guide.md` | How the architecture is realised in the Bubble Tea application: composition root, dependency wiring, operations queue, message flow, implementation rules |
+| `ux/` | `ui-overview.md`, `ui-implementation.md`, `ui-review.md`, `tui-dashboard-wireframe.md`, `tui-package-details.md`, `tui-review.md` | UI information architecture, implementation and screen-level wireframes |
+| `product/` | `prd.md`, `roadmap.md` | Vision, scope, phased plan |
+| (top level) | `glossary.md`, `design-trace-logging.md` | Vocabulary; the trace-logging design |
 
-- `domain/domain.md`
-- `domain/architecture.md`
-- `domain/interfaces.md`
-- `domain/workflow.md`
-- `domain/analyzer-specs.md`
-- `domain/risk-analysis.md`
-- `domain/go-domain-structs.md`
-- `ux/ui-overview.md`
-- `ux/ui-implementation.md`
-- `glossary.md`
+When canonical docs conflict: `workflow.md` → `domain.md` →
+`interfaces.md` → `architecture.md` → `developer-guide.md` → the rest.
 
-The remaining canonical documents build on this foundation:
+## History
 
-- **Product** documents define scope and roadmap.
-- **Application Contract** documents describe how the architecture is
-  realised in the Bubble Tea application.
-- **Sprint** documents define the implementation plan.
+| Path | Contents |
+| --- | --- |
+| `sprints/` | The original sprint plan and per-sprint specs (superseded by Gitea issues and milestones) |
+| `screen-packets/`, `interface-packets/` | Self-contained implementation specs written for a local model during the initial build |
+| `prompts/` | Work packets and prompts given to coding agents |
+| `reviews/` | Review findings against the docs and code at the time |
+| `archive/` | Superseded designs (e.g. `design.md`) |
+| `backlog.md` | The pre-Gitea backlog |
 
-## Documentation Taxonomy
-
-| Folder | Kind | Contents | Audience |
-| --- | --- | --- | --- |
-| `product/` | Canonical | `prd.md`, `roadmap.md` | Vision, scope, phased plan |
-| `domain/` | Canonical | `domain.md`, `architecture.md`, `interfaces.md`, `workflow.md`, `analyzer-specs.md`, `risk-analysis.md`, `go-domain-structs.md` | The domain and architectural contract — entities, lifecycle, workflows, analyzer behaviour, interface responsibilities and Go struct mapping |
-| `app-contract/` | Canonical | `developer-guide.md` | Application composition and Bubble Tea implementation architecture (composition root, dependency wiring, operations queue, message flow) |
-| `ux/` | Canonical | `ui-overview.md`, `ui-implementation.md`, `tui-dashboard-wireframe.md`, `tui-package-details.md`, `tui-review.md` | UI information architecture, implementation architecture and screen-level wireframes |
-| `archive/` | — | Superseded docs, kept for history (e.g. `design.md`) | Not authoritative; do not implement from these |
-| `screen-packets/` | Derived | One file per UI screen | Self-contained implementation spec for a local model implementing one screen |
-| `interface-packets/` | Derived | One file per Go interface (`GitProvider`, `ReviewEngine`, `Builder`, `Publisher`, etc.) | Self-contained implementation spec for a local model implementing one interface |
-| `sprints/` | Canonical | `sprint-plan.md`, `s01-slice.md` … `s09-ship.md` | Per-sprint implementation plan — goal, inputs, outputs, acceptance criteria, and the verbatim prompt for the coding assistant driving that sprint |
+`code-review-checklist.md` is a review procedure, not a spec; whether it
+is still current is undecided.
 
 ## Note
 
-> `AGENTS.md` lives at the repo root (not under `docs/`) and is read
-> automatically by Codex — it's an operational tool-input file, not part
-> of this documentation taxonomy.
-
-## Rules
-
-- Canonical docs are edited directly, with cross-document reconciliation
-  when a change affects more than one file.
-- Derived packets are never hand-edited. If a packet looks wrong, fix the
-  canonical doc it draws from and regenerate the packet.
-- Verification documents record review findings against the canonical
-  documentation. If a review identifies a discrepancy, update the
-  canonical documentation (if the design is wrong) or the implementation
-  (if the implementation is wrong); reviews themselves do not become
-  sources of truth.
-- Archived docs are kept for history only and marked superseded at the
-  top of the file — they are never a source of truth and nothing should
-  be implemented from them.
+`AGENTS.md` at the repo root holds the instructions for AI coding agents.
+It is an operational file, not part of this taxonomy, and is not
+published.

@@ -1,6 +1,6 @@
 # Package Lifecycle
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-30
 > Status: Active
 > Companion docs: domain.md, tui-review.md, developer-guide.md,
 > git-command-walkthrough.md (the git commands behind each step)
@@ -148,14 +148,14 @@ them, and never claims more than git can establish.
 - The app counts commits on `master` that are not on upstream
   (`git rev-list --count upstream/master..master`) and shows them on Package
   Details ("N local commit(s) not on upstream") and in the Dashboard's Local
-  column ("N local"). Import's placeholder commit (empty tree) is never
+  column ("N"). Import's placeholder commit (empty tree) is never
   counted.
 - The wording is "not on upstream", not "unreviewed": git cannot distinguish
   a local edit from a previously reviewed upstream commit that the AUR later
   dropped by force-pushing. Both are real divergence from upstream.
-- If the count cannot be determined, the app says so ("? local" on the
-  Dashboard, a warning row on Package Details). A failed check is never shown
-  as 0 and never hides the indicator.
+- If the count cannot be determined, the app says so ("?" in the
+  Dashboard's Local column, a warning row on Package Details). A failed
+  check is never shown as 0 and never hides the indicator.
 - Build requires explicit confirmation while N > 0, or when the check
   failed, on the Dashboard and Package Details alike: "This build includes N
   local commit(s) not on upstream. Build anyway?" The check runs live at the
@@ -219,7 +219,7 @@ valid.
 Notes:
 
 1. No automatic rollback; the user is told which steps completed (§ Partial Import Failure). Dashboard Import is deferred (#112). The first review shows a fully additive diff.
-2. Replaces a Pending, Approved, or Rejected review. Local HEAD and the last success are unchanged. The AUR update card can signal a new upstream version before Fetch. The comparison is with the upstream commit the stored review covers (`Review.UpstreamCommit`), not with the package version and not with where `upstream/master` was before this fetch — so a new commit without a version bump still starts a review, and it holds however `upstream/master` got there: this Fetch, an earlier `update`, or a `git fetch` outside the app (#405).
+2. Replaces a Pending, Approved, or Rejected review. Local HEAD and the last success are unchanged. The AUR card can signal before Fetch that the AUR has moved past the reviewed commit (§ AUR Version Check). The comparison is with the upstream commit the stored review covers (`Review.UpstreamCommit`), not with the package version and not with where `upstream/master` was before this fetch — so a new commit without a version bump still starts a review, and it holds however `upstream/master` got there: this Fetch, an earlier `update`, or a `git fetch` outside the app (#405).
 3. Changes only the findings status (Not Run / 0 / N), which selects the Approve prompt text (`tui-review.md` § Confirmation Flows). Analyze runs on the review the Review screen shows; it does not fetch and never starts a review (#399). If any analyzer fails, or the run is cancelled, nothing is recorded: the findings status keeps its previous value and the operation fails with an error naming the analyzer (#410).
 4. The Approve modal is always shown; its notes go to `Review.ReviewerNotes`.
 5. The Approved decision is recorded even when the merge fails.
@@ -450,55 +450,211 @@ exactly which steps completed and which didn't. Silence about partial
 state is not acceptable here either — the same standard as § Partial
 Import Failure above.
 
-## Local Version: Git-Committed, Not Working Tree
+## AUR Version Check
 
-A package's **local version** is the version in the PKGBUILD at the commit
-its current review covers (`Review.UpstreamCommit`), whatever the review's
-state: Pending, Approved, Rejected, or Approved and merged. It is read
-from git through the Git provider (`FileAtCommit`), never from the
-PKGBUILD file in the package directory's working tree. A package with no
-review has no local version (unknown).
+The `update` command and the Dashboard (Available column, AUR card) both
+use this check. For every curated package, it tells you whether the AUR
+has changed the package's build recipe since the version you reviewed,
+which means a Fetch would bring something new to review. It does this
+with one request to the AUR, without fetching any repository.
 
-Every comparison with the AUR uses it, and it answers one question: has
-the AUR moved past what is under review? If it has, a Fetch brings
-something new: a new upstream commit replaces the stored review
-(§ Transition Matrix, note 2; #405). What is still to be done with the
-reviewed commit (Review, Merge, Build, …) is shown by the lifecycle state
-and its Next Action, not by the version comparison.
+### Terms
 
-**Version string:** the local version is written as the AUR writes it,
-`[epoch:]pkgver-pkgrel`, from the PKGBUILD's plain `epoch`, `pkgver` and
-`pkgrel` assignments. The epoch is left out when it is absent or 0, as the
-AUR does. The version cannot be read (unknown) when `pkgver` or `pkgrel`
-is missing, or when `epoch`, `pkgver` or `pkgrel` is computed rather than
-assigned (#433).
+- **AUR repository**: the small git repository the AUR keeps for each
+  package (`https://aur.archlinux.org/<pkg>.git`). It holds the build
+  recipe: the PKGBUILD, `.SRCINFO`, and any patches or install scripts.
+  An **AUR commit** is a commit in it.
+- **Project source**: the code the recipe builds, which lives elsewhere
+  (GitHub, the project's own site, …). A **source commit** is a commit
+  there.
+- **Version string**: the version as the AUR shows it,
+  `[epoch:]pkgver-pkgrel`, for example `1.4.4-2`, `1:1.4.4-2` or
+  `r123.abc1234-1`. It is built from the PKGBUILD's `epoch`, `pkgver` and
+  `pkgrel` assignments; the epoch is left out when it is absent or 0.
+  `pkgver` alone is only one part of it.
 
-**Different, not older:** the AUR has moved past the reviewed commit when
-the two versions differ. They are not ordered: the reviewed commit comes
-from the AUR's own history, so an AUR version that differs from it, older
-or newer, belongs to a later AUR commit.
+In aur-curator, **upstream** means the AUR repository, not the project
+source: the AUR remote of each package repository is called `upstream`,
+and a review's upstream commit is an AUR commit.
+
+### The Problem
+
+The AUR changes recipes all the time. To know which curated packages
+have something new to review, aur-curator could fetch every AUR
+repository, but that is slow and touches every repository. The check
+answers the same question more cheaply: is the AUR's version string for
+this package different from the one in the commit you reviewed?
+
+It does not tell you whether the project has made a release or has new
+source commits (§ VCS Packages, § Limits), whether the installed package
+is current (that is pacman's job, § Installation), or what is left to do
+with the reviewed commit (the lifecycle state and its Next Action show
+that).
+
+### How It Works
+
+#### AUR Version
+
+One request to the AUR's API (RPC v5 `info`) covers every curated
+package. For each package the AUR returns the version string from the
+`.SRCINFO` of its latest AUR commit; every push to the AUR must carry a
+`.SRCINFO`. The request has a 15-second timeout.
+
+#### Local Version: Git-Committed, Not Working Tree
+
+The **local version** is the version string from the PKGBUILD at the AUR
+commit your current review covers, whatever the review's state: Pending,
+Approved, Rejected, or Approved and merged. It is read from git, never
+from the PKGBUILD file on disk. A package with no review has no local
+version.
+
+The version string is built from the first plain `epoch`, `pkgver` and
+`pkgrel` assignments in the PKGBUILD, indented or not. It cannot be read
+when `pkgver` or `pkgrel` is missing, or when `epoch`, `pkgver` or
+`pkgrel` is computed rather than written out: its value contains a `$` or
+a backtick, and aur-curator does not run shell code. A `pkgver()` function
+makes no difference; § VCS Packages says why.
 
 **Why the reviewed commit, not local `master`:** `master` holds only what
 has been merged. Comparing it with the AUR mixes two things: the AUR
 moving, and reviewed work not merged yet. An approved review that is not
 merged already covers the AUR's version, so a comparison with `master`
-offers a Fetch that finds nothing, on every check; a rejected review is
-offered for as long as the rejected version stays current on the AUR
-(#426).
+would offer a Fetch that finds nothing, on every check; a rejected review
+would be offered for as long as the rejected version stays current on the
+AUR.
 
-**Why committed, not the working tree:** Build clones local `master` HEAD
-into a disposable directory and never reads the working tree, so an
-uncommitted edit to a PKGBUILD has no effect on what is built. An
-uncommitted edit has also not been through Review; reacting to it would
-mean reacting to unreviewed changes. So an uncommitted edit is, by design,
-invisible to every staleness and update check.
+**Why committed, not the file on disk:** Build clones local `master` into
+a fresh directory and never reads the working tree, so an uncommitted
+edit to a PKGBUILD has no effect on what is built. It has not been
+reviewed either; reacting to it would mean reacting to unreviewed
+changes. So an uncommitted edit is, by design, invisible to the check.
 
-Consumers: the `update` command and the Dashboard's AUR check (Available
-column, AUR update card), both through `aurinfo.NewGitLocalVersionResolver`.
-New code that needs a local version uses the same resolver. If the version
-on local `master`, or working-tree state, is ever genuinely needed, it is
-a separate, explicitly named concept — never substituted for "local
-version".
+#### Comparison
+
+The check only asks whether the two version strings are the same
+(ignoring case). It does not ask which is higher. The reviewed commit is
+one of the AUR repository's own commits, so if the AUR now shows a
+different version string, the AUR has a later commit, even when that
+version looks lower (a maintainer rolling `1.5` back to `1.4`, say).
+
+#### Results
+
+Every package gets exactly one result:
+
+| Result | When |
+| --- | --- |
+| Stale | Both version strings are known and differ: a Fetch brings a new AUR commit |
+| Up to date | Both are known and the same |
+| Not on the AUR | The AUR does not know the package (deleted, renamed, or never there) |
+| Version not readable | The PKGBUILD was read, but its version string cannot be (§ Local Version). True on every check until the recipe changes |
+| Local version failed | No review, the review cannot be read or names no commit, or the PKGBUILD at that commit cannot be read (a timeout included) |
+| Request failed | The AUR request failed (network, HTTP error, bad response, timeout). Every package is unknown |
+
+Anything unknown is never shown or counted as up to date.
+
+### VCS Packages
+
+#### What a VCS package builds
+
+A VCS package (`foo-git`, `-hg`, `-svn`, …) points its source at a
+version-control repository without a fixed revision, for example
+`git+https://example.com/foo.git`. `makepkg` therefore builds the latest
+source commit of the project's default branch: its current development
+state, not a release. A source pinned to a tag (`#tag=v1.2.3`) builds a
+fixed release; such a package is normally named `foo`, not `foo-git`.
+
+#### Where its version string comes from
+
+A VCS PKGBUILD has both a plain `pkgver` assignment and a `pkgver()`
+function. The function works out a version for the source being built,
+for example `r123.abc1234` (commit count and short hash) or
+`1.2.3.r45.gabc1234` (`git describe`: 45 commits after tag `1.2.3`).
+After running it, `makepkg` writes the result back into the plain
+assignment. So the plain `pkgver` in a VCS recipe is whatever `pkgver()`
+produced at the maintainer's last build before pushing, and that is what
+the AUR shows.
+
+#### When the AUR moves
+
+By AUR convention a VCS package is not pushed just because the project
+has new source commits: every build picks them up anyway. A maintainer
+pushes when the recipe changes (dependencies, build steps, sources), and
+the plain `pkgver` usually changes too, because they built before
+pushing.
+
+#### What the check does
+
+It compares the plain `pkgver` like any other package's and ignores the
+`pkgver()` function. Both sides are recipe values from the same AUR
+repository, so a different version string still means a later AUR
+commit: a recipe change, which is what Review is for.
+
+#### Rejected alternative
+
+Treating a VCS package's version as not readable. `update` would then
+never offer a VCS package, and its recipe changes would only be found by
+fetching it by hand.
+
+#### How yay and paru handle them
+
+By default they compare the installed version, which `pkgver()` produced
+at build time, with the AUR's plain value. The installed one is usually
+ahead, so a VCS package is rarely offered. With `--devel` they run
+`git ls-remote` on the PKGBUILD's source repositories and offer a rebuild
+when the project's latest source commit differs from the one recorded at
+install time (yay keeps these in `~/.cache/yay/vcs.json`;
+`yay -Y --gendb` seeds it). That answers "has the project's source
+moved?", which aur-curator does not ask.
+
+### Limits
+
+- **An AUR commit that does not change the version string** is not seen,
+  for any package. VCS packages are more prone to it: a maintainer who
+  pushes a recipe fix without rebuilding keeps the old `pkgver`. A Fetch
+  still finds it, because Fetch compares commits, not versions
+  (§ Transition Matrix, note 2). #442 would let the check compare commits
+  too.
+- **New source commits of a VCS package** are not seen: the AUR has
+  nothing new. Building a VCS package compiles the project's latest
+  source commit at Build time, which no review has covered, whatever its
+  `pkgver` says. That is a trust question rather than a version-check
+  one, for the threat model (post-v1 plan, D). A release package (`foo`),
+  where one exists, avoids it.
+- **The AUR unreachable** gives "Request failed" for every package;
+  nothing reads as up to date.
+
+### Where It Is Used
+
+- **`update`**: § Update. § Scan says how each result is reported and how
+  it affects the exit status.
+- **`outdated`**: § Outdated, a read-only list of the stale packages.
+- **Dashboard**: the Available column and the AUR card
+  (`tui-dashboard-wireframe.md` § Available). The check runs when the
+  Dashboard starts and on Refresh (`R`). A failed request is written to
+  the error log. The Dashboard's State column also shows versions, read
+  from git at the review's commits or at local `master` HEAD
+  (`tui-dashboard-wireframe.md` § State). They are for display only and
+  never take part in this comparison.
+
+New code that needs a local version uses the same code. If the version on
+local `master`, or on disk, is ever genuinely needed, it is a separate,
+explicitly named concept, never substituted for "local version".
+
+In the code: `internal/aurinfo`. `Client.BulkCheck` makes the request and
+the comparison; `NewGitLocalVersionResolver` reads the local version
+(`git.Provider.FileAtCommit`); `ExtractFullVersion` builds the version
+string. Local reads run under `git.GitTimeout`.
+
+### Decision History
+
+| Issue | Decision | Why |
+| --- | --- | --- |
+| #331 | Unknown never reads as up to date | A failed or partial check must not hide an update |
+| #402 | Every package gets one result, with a reason when unknown | Nothing is silently skipped |
+| #426 | Compare with the reviewed commit, not local `master` | `master` mixes the AUR moving with reviewed work not merged yet |
+| #433 | Compare same/different, not higher/lower; build the version string as the AUR does; computed values are unknown | The reviewed commit is one of the AUR's own; aur-curator does not run shell code |
+| #434 | VCS packages compare their plain `pkgver`; `pkgver()` is ignored | A different version string is still a later AUR commit. Before #434 the code meant to treat `pkgver()` as not readable, but only noticed it on the PKGBUILD's first line, so real VCS packages were already compared this way |
+| #442 | (Open) compare AUR commits with `git ls-remote` | Closes the "version string unchanged" gap |
 
 ## Update
 
@@ -512,7 +668,7 @@ installs anything.
 ### Scan
 
 One AUR request covers every curated package; each package's local
-version is read as in § Local Version. If the catalog cannot be read or
+version is read as in § AUR Version Check. If the catalog cannot be read or
 the AUR request fails, `update` stops before asking anything (exit 1).
 
 Each package ends the scan as one of:
@@ -521,15 +677,15 @@ Each package ends the scan as one of:
 | --- | --- | --- |
 | Up to date | The AUR has not moved past the local version | Counted |
 | Stale | The AUR has moved past the local version | Offered (§ Offer) |
-| Not checked | The local version cannot be read from the PKGBUILD (§ Local Version: a `pkgver()` function, a computed `epoch`, `pkgver` or `pkgrel`, or a missing `pkgver` or `pkgrel`), or the package is not on the AUR | Named with the reason. Does not affect the exit status: it is a property of the package, true on every run, not a failure of this one. |
-| Check failed | No Review record; the review cannot be read; the review has no upstream commit; the PKGBUILD at that commit cannot be read (a timeout included); or, for an approved review, whether its commit is merged cannot be checked | Named with the reason. Exit 1. |
+| Not checked | Version not readable, or not on the AUR (§ AUR Version Check, Results) | Named with the reason. Does not affect the exit status: it is a property of the package, true on every run, not a failure of this one. |
+| Check failed | Local version failed (§ AUR Version Check, Results); or, for an approved review, whether its commit is merged cannot be checked | Named with the reason. Exit 1. |
 
 A package whose merge check failed is still offered if it is stale: it
 is treated as not merged (fail-closed) and asked about on its own
 (§ Offer), and the failure is named.
 
 A package with a pending review that the AUR has not moved past prints
-`<pkg>: review pending, no newer AUR version.`
+`<pkg>: review pending; it covers the AUR's current version.`
 
 ### Offer
 
@@ -587,6 +743,69 @@ Before the summary line, every failed package is named with its reason
 
 An approved review that is not merged does not make the exit 10: what is
 left there is a merge, not a review.
+
+## Outdated
+
+`update` is the only other way to ask which curated packages the AUR has
+something different for, and it is interactive and fetches. Scripts need
+the answer alone: a status bar module (waybar, polybar) that runs a
+command every few minutes and shows its output, a shell greeting, a
+timer. `aur-curator <config-file> outdated` prints that list and changes
+nothing. It is the counterpart of `yay -Qua`.
+
+### What It Does
+
+It runs `update`'s scan (§ Update, § Scan) and stops there: one AUR
+request, and local reads only. It never fetches, creates or changes a
+review, writes a store, or writes the error or activity log. Like every
+other command it takes the workspace lock, so it does not run while the
+TUI or another command is open (exit 1, with the usual message).
+
+### Output
+
+One line on stdout per stale package, in catalog order:
+
+```text
+pfetch 1.11.0-1 -> 1.12.0-1
+yay 12.4.1-1 -> 12.4.2-1 (older review pending)
+broot 0.44.1-1 -> 0.45.0-1 (approved, not merged)
+```
+
+- The left version is the reviewed commit's, the right one the AUR's
+  (§ AUR Version Check). They differ; the right one is not necessarily
+  higher.
+- The marker says what a Fetch would discard (§ Offer): a pending review
+  for an older version (`older review pending`), or an approved review
+  not merged yet (`approved, not merged`). Merged and rejected reviews
+  have no marker.
+- `->` is ASCII, so scripts can split on it. The number of lines is the
+  number of stale packages.
+
+What is not listed:
+
+| Scan outcome | Shown |
+| --- | --- |
+| Up to date, including a pending review that already covers the AUR's version | Nothing |
+| Not checked (version not readable, or not on the AUR) | Nothing. A property of the package, true on every run; `update` and the Dashboard name it |
+| Check failed | Its name and reason on stderr |
+
+### Exit Status
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Completed, whether or not anything was listed |
+| 1 | A package's check failed (the stale ones are still listed), or `outdated` could not start or scan (workspace lock held, catalog unreadable, AUR request failed) |
+| 2 | Usage error |
+
+Errors go to stderr only. A status bar running `outdated` every few
+minutes while the AUR is down would otherwise fill the error log with the
+same line.
+
+### Decision History
+
+| Issue | Decision |
+| --- | --- |
+| #403 | A separate `outdated` command rather than `update --list`; lists stale packages only, with the Fetch-discard markers; takes the workspace lock like every command; no log writes; exit 0 or 1 |
 
 ## Check (Consistency)
 

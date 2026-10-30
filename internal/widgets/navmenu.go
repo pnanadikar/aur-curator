@@ -26,13 +26,18 @@ func DefaultNavItems() []NavItem {
 	}
 }
 
+// ScreenBodyMargin is how much narrower than the terminal WrapScreenBody
+// makes a screen's content: content up to the terminal width minus this
+// is drawn uncut.
+const ScreenBodyMargin = 6
+
 // WrapScreenBody draws content in the screen's section box. Lines wider
 // than the box are truncated, never wrapped: one content line is always
 // one row, so heights measured with lipgloss.Height (FlexHeight) match
 // what is drawn (#329). Wrapping here used to add rows nobody measured,
 // pushing App's top rows — the toast — off-screen.
 func WrapScreenBody(width int, content string) string {
-	w := max(width-6, theme.MinScreenWidth)
+	w := max(width-ScreenBodyMargin, theme.MinScreenWidth)
 	content = lipgloss.NewStyle().MaxWidth(w).Render(content)
 	return theme.SectionBorderStyle().Width(w).Render(content)
 }

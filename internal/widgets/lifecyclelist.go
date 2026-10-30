@@ -16,6 +16,149 @@ import (
 // Dashboard uses it to pick a value that fits (#331).
 const AvailableColWidth = 25
 
+// Column widths in cells. HeaderRow and Render share them, so the header's
+// labels sit over their columns (#448). State has no constant: its width
+// depends on the page (stateColWidth).
+const (
+	nameColWidth       = 24
+	nextActionColWidth = 12
+	publishedColWidth  = 15
+	riskColWidth       = 10
+	localColWidth      = 8
+)
+
+// stateHeader is the State column's header label. The column is never
+// narrower than it.
+const stateHeader = "State"
+
+// StateColMaxWidth is the State column's greatest width in cells, versions
+// included (tui-dashboard-wireframe.md § State, #428).
+const StateColMaxWidth = 34
+
+// stateColWidth returns the State column's width for a page (see
+// stateLayout), so the header and the rows agree on every page (#448).
+func stateColWidth(entries []LifecycleEntry) int {
+	_, w := stateLayout(entries)
+	return w
+}
+
+// StateVersions are the versions the State column shows after the state
+// (tui-dashboard-wireframe.md § State, #428). Each is the PKGBUILD's
+// "[epoch:]pkgver-pkgrel" at a commit, or "" when it was not read or
+// could not be.
+type StateVersions struct {
+	Base     string // at the review's base commit
+	Reviewed string // at the review's reviewed commit (UpstreamCommit)
+	Head     string // at local master HEAD
+
+	// FirstReview: the review has no base commit, so Base is "" by
+	// design, not because its read failed.
+	FirstReview bool
+}
+
+// stateParts splits what the State cell shows after the state: base is
+// the version before the arrow, arrow says whether there is an arrow, and
+// target is the version the row is about. Review Pending and Approved show
+// base → reviewed ("→ reviewed" on a first review); Rejected shows the
+// reviewed version; Merged to Published show the version at master HEAD.
+// All are empty when there is nothing to show, including when a version
+// could not be read: never half a pair.
+func stateParts(state lifecycle.State, v StateVersions) (base string, arrow bool, target string) {
+	switch state {
+	case lifecycle.ReviewPending, lifecycle.Approved:
+		switch {
+		case v.Reviewed == "":
+			return "", false, ""
+		case v.FirstReview:
+			return "", true, v.Reviewed
+		case v.Base == "":
+			return "", false, ""
+		}
+		return v.Base, true, v.Reviewed
+	case lifecycle.Rejected:
+		return "", false, v.Reviewed
+	case lifecycle.Merged, lifecycle.Built, lifecycle.Confirmed, lifecycle.Published:
+		return "", false, v.Head
+	default:
+		return "", false, ""
+	}
+}
+
+// stateLayout returns each row's State cell text for a page, and the
+// column's width (tui-dashboard-wireframe.md § State, #428).
+//
+// The versions line up across the page: the state names are padded to
+// the longest one, what comes before the target version ("base → " or
+// "→ ") is right-aligned, so arrows sit in one column and every target
+// version starts in the same column. A row with no versions shows its
+// state alone.
+//
+// The column is at most StateColMaxWidth cells. When the page does not
+// fit, the pairs drop their base version; a cell still too long is cut
+// with "…". The state itself is never cut. The width is never less than
+// the header label, and with no rows it is the label's width.
+func stateLayout(entries []LifecycleEntry) (cells []string, width int) {
+	build := func(dropBase bool) ([]string, int) {
+		prefixes := make([]string, len(entries))
+		targets := make([]string, len(entries))
+		nameW, prefixW := 0, 0
+		for i, e := range entries {
+			base, arrow, target := stateParts(e.Lifecycle, e.Versions)
+			if target == "" {
+				continue
+			}
+			switch {
+			case arrow && base != "" && !dropBase:
+				prefixes[i] = base + " → "
+			case arrow:
+				prefixes[i] = "→ "
+			}
+			targets[i] = target
+			nameW = max(nameW, len(e.Lifecycle))
+			prefixW = max(prefixW, lipgloss.Width(prefixes[i]))
+		}
+		out := make([]string, len(entries))
+		w := len(stateHeader)
+		for i, e := range entries {
+			if targets[i] == "" {
+				out[i] = string(e.Lifecycle)
+			} else {
+				out[i] = padRight(string(e.Lifecycle), nameW) + " " +
+					strings.Repeat(" ", prefixW-lipgloss.Width(prefixes[i])) + prefixes[i] + targets[i]
+			}
+			w = max(w, lipgloss.Width(out[i]))
+		}
+		return out, w
+	}
+
+	cells, width = build(false)
+	if width > StateColMaxWidth {
+		cells, width = build(true)
+	}
+	if width > StateColMaxWidth {
+		for i, c := range cells {
+			if lipgloss.Width(c) > StateColMaxWidth {
+				cells[i] = string([]rune(c)[:StateColMaxWidth-1]) + "…"
+			}
+		}
+		width = StateColMaxWidth
+	}
+	return cells, width
+}
+
+// stateText returns one row's State cell as it would show on a page of its
+// own.
+func stateText(state lifecycle.State, v StateVersions) string {
+	cells, _ := stateLayout([]LifecycleEntry{{Lifecycle: state, Versions: v}})
+	return cells[0]
+}
+
+// padRight pads s with spaces to w display cells. "…", "—" and "→" are
+// several bytes but one cell (#325).
+func padRight(s string, w int) string {
+	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
+}
+
 // LifecycleEntry holds one package's name and its computed lifecycle state.
 type LifecycleEntry struct {
 	Name               domain.PackageName
@@ -32,6 +175,10 @@ type LifecycleEntry struct {
 	// never blank, so a failed check is not mistaken for "none".
 	LocalCommits        int
 	LocalCommitsUnknown bool
+
+	// Versions are shown after the state in the State column (#428).
+	// Lifecycle stays the bare state: sorting and filtering use it.
+	Versions StateVersions
 }
 
 // LifecycleList renders a scrollable package list with lifecycle status,
@@ -139,6 +286,34 @@ func (l *LifecycleList) SetCursor(c int) {
 	l.cursor = c
 }
 
+// CursorUp moves the cursor up one row. On the first row of any page but
+// the first, it moves to the previous page with the cursor on its last
+// row, the mirror of CursorDown (#447).
+func (l *LifecycleList) CursorUp() {
+	if l.cursor > 0 {
+		l.cursor--
+		return
+	}
+	if l.page == 0 {
+		return
+	}
+	l.page--
+	l.cursor = max(len(l.VisibleEntries())-1, 0)
+}
+
+// CursorDown moves the cursor down one row. On the last row of a full
+// page, it moves to the next page with the cursor on its first row.
+func (l *LifecycleList) CursorDown() {
+	visible := l.VisibleEntries()
+	if l.cursor < len(visible)-1 {
+		l.cursor++
+		return
+	}
+	if len(visible) == l.pageSize {
+		l.NextPage()
+	}
+}
+
 // NextPage moves to the next page if available.
 func (l *LifecycleList) NextPage() {
 	if l.page < l.TotalPages()-1 {
@@ -230,12 +405,7 @@ func (l LifecycleList) Render() string {
 		return theme.SubtleStyle().Render("No packages match the current filter.")
 	}
 
-	var maxLifecycle int
-	for _, e := range entries {
-		if len(e.Lifecycle) > maxLifecycle {
-			maxLifecycle = len(e.Lifecycle)
-		}
-	}
+	stateCells, stateWidth := stateLayout(entries)
 
 	var b strings.Builder
 	for i, e := range entries {
@@ -249,7 +419,6 @@ func (l LifecycleList) Render() string {
 		// Name column: always exactly nameColWidth cells. Padding uses display
 		// width, not bytes — "…" is 3 bytes but 1 cell (#325). AUR names are
 		// ASCII, so slicing by bytes cannot split a character.
-		const nameColWidth = 24
 		name := string(e.Name)
 		if lipgloss.Width(name) > nameColWidth {
 			name = name[:nameColWidth-1] + "…"
@@ -257,16 +426,18 @@ func (l LifecycleList) Render() string {
 		nameCol := prefix + theme.HeaderStyle().Render(name) + strings.Repeat(" ", max(nameColWidth-lipgloss.Width(name), 0))
 
 		lifecycleStyle := lifecycleStyle(e.Lifecycle)
-		lifecycleCol := lifecycleStyle.Render(string(e.Lifecycle))
-		lifecycleCol += strings.Repeat(" ", maxLifecycle-len(e.Lifecycle))
+		// The state in its colour, then its versions unstyled (#428).
+		st := stateCells[i]
+		lifecycleCol := lifecycleStyle.Render(string(e.Lifecycle)) + st[len(e.Lifecycle):]
+		lifecycleCol += strings.Repeat(" ", max(stateWidth-lipgloss.Width(st), 0))
 
 		// Cut by characters and pad by display width: "—" is 3 bytes but
 		// 1 cell (#325, #351).
 		na := e.NextAction
-		if r := []rune(na); len(r) > 12 {
-			na = string(r[:12])
+		if r := []rune(na); len(r) > nextActionColWidth {
+			na = string(r[:nextActionColWidth])
 		}
-		nextActionCol := na + strings.Repeat(" ", max(12-lipgloss.Width(na), 0))
+		nextActionCol := padRight(na, nextActionColWidth)
 
 		// Cut by characters, never bytes ("→", "…", "—" are multi-byte),
 		// and mark the cut (#331).
@@ -277,10 +448,10 @@ func (l LifecycleList) Render() string {
 		availableCol := avail + strings.Repeat(" ", max(AvailableColWidth-lipgloss.Width(avail), 0))
 
 		cp := e.ConfirmedPublished
-		if len(cp) > 15 {
-			cp = cp[:15]
+		if len(cp) > publishedColWidth {
+			cp = cp[:publishedColWidth]
 		}
-		confPubCol := cp + strings.Repeat(" ", 15-len(cp))
+		confPubCol := cp + strings.Repeat(" ", publishedColWidth-len(cp))
 
 		var confPubStyle lipgloss.Style
 		switch e.ConfirmedPublished {
@@ -294,10 +465,10 @@ func (l LifecycleList) Render() string {
 		confPubCol = confPubStyle.Render(confPubCol)
 
 		r := e.Risk
-		if len(r) > 10 {
-			r = r[:10]
+		if len(r) > riskColWidth {
+			r = r[:riskColWidth]
 		}
-		riskCol := r + strings.Repeat(" ", 10-len(r))
+		riskCol := r + strings.Repeat(" ", riskColWidth-len(r))
 
 		var riskStyle lipgloss.Style
 		switch e.Risk {
@@ -312,16 +483,15 @@ func (l LifecycleList) Render() string {
 		}
 		riskCol = riskStyle.Render(riskCol)
 
-		// Local: commits on master not on upstream. The list has no column
-		// headers, so the cell labels itself: blank when none, "N local"
-		// when some, "? local" when the check failed.
-		const localColWidth = 8
+		// Local: commits on master not on upstream. The header names the
+		// column (#448): blank when none, the count when some, "?" when the
+		// check failed.
 		localText := ""
 		switch {
 		case e.LocalCommitsUnknown:
-			localText = "? local"
+			localText = "?"
 		case e.LocalCommits > 0:
-			localText = strconv.Itoa(e.LocalCommits) + " local"
+			localText = strconv.Itoa(e.LocalCommits)
 		}
 		if len(localText) > localColWidth {
 			localText = localText[:localColWidth]
@@ -343,6 +513,26 @@ func (l LifecycleList) Render() string {
 		b.WriteString(strings.Repeat("\n", pad))
 	}
 	return b.String()
+}
+
+// HeaderRow returns the row that names the columns, for the current page
+// (tui-dashboard-wireframe.md § Header Row, #448). Each label starts where
+// its column starts: Package after the two-cell cursor prefix, State at
+// the page's State width. Behind labels the trailing ↑N count, which has
+// no fixed width because it is last. The header is returned even when no
+// rows match the filter, so the layout does not move.
+func (l LifecycleList) HeaderRow() string {
+	labels := []string{
+		"  " + padRight("Package", nameColWidth),
+		padRight(stateHeader, stateColWidth(l.VisibleEntries())),
+		padRight("Next Action", nextActionColWidth),
+		padRight("Available", AvailableColWidth),
+		padRight("Published", publishedColWidth),
+		padRight("Risk", riskColWidth),
+		padRight("Local", localColWidth),
+		"Behind",
+	}
+	return theme.SubtleStyle().Render(strings.Join(labels, "  "))
 }
 
 func lifecycleStyle(s lifecycle.State) lipgloss.Style {

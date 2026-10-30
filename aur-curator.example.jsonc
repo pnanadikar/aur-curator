@@ -2,8 +2,9 @@
   // aur-curator example configuration.
   // Comments (// and /* */) are allowed. Trailing commas are not.
   // Copy this file, edit the values, and pass its path as the first
-  // argument to aur-curator. Unknown keys are silently ignored, so
-  // check spelling carefully.
+  // argument to aur-curator. aur-curator warns about keys it does not
+  // know, and refuses to start if a key differs from a known one only in
+  // case. Paths must be absolute or start with "~/".
 
   // ── Required ───────────────────────────────────────────────────────
   // aur-curator will not start if any of these is missing or empty.
@@ -12,7 +13,8 @@
   // package here, plus its own state under <rootPath>/.aur-curator/.
   "rootPath": "/home/you/aur",
 
-  // Local pacman repository that built packages are published to.
+  // Local pacman repository that built packages are published to. Must
+  // not be inside rootPath, nor rootPath inside it.
   // pacman downloads as an unprivileged user, so this directory (and
   // every directory above it) must be readable by that user. A path
   // outside your home directory avoids permission problems.
@@ -37,9 +39,11 @@
   // Repository database file name inside repositoryPath.
   // Default: "custom.db.tar.gz". The part before ".db" is the repository
   // name to use as the section header in /etc/pacman.conf, e.g. [custom].
+  // Must end in ".db.tar.gz".
   "repoDBName": "custom.db.tar.gz",
 
-  // Build backend. Default: "makepkg" (currently the only backend).
+  // Build backend. Default: "makepkg", currently the only backend; any
+  // other value is an error.
   "builderBackend": "makepkg",
 
   // Activity log: one line per import, review decision, merge, build,

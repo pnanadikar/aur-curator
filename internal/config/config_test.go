@@ -14,8 +14,6 @@ func TestLoad(t *testing.T) {
 			"rootPath": "/tmp/aur",
 			"repositoryPath": "/tmp/repo",
 			"builderBackend": "makepkg",
-			"analyzerConfig": {"key": "value"},
-			"uiPreferences": {"theme": "dark"},
 			"giteaBaseURL": "https://gitea.example.com",
 			"giteaOrg": "myorg",
 			"giteaToken": "secret-token",
@@ -37,12 +35,6 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.BuilderBackend != "makepkg" {
 			t.Errorf("BuilderBackend = %q, want %q", cfg.BuilderBackend, "makepkg")
-		}
-		if cfg.AnalyzerConfig == nil {
-			t.Error("AnalyzerConfig is nil, want non-nil")
-		}
-		if cfg.UIPreferences == nil {
-			t.Error("UIPreferences is nil, want non-nil")
 		}
 		if cfg.GiteaBaseURL != "https://gitea.example.com" {
 			t.Errorf("GiteaBaseURL = %q, want %q", cfg.GiteaBaseURL, "https://gitea.example.com")
@@ -125,32 +117,6 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.BuilderBackend != "makepkg" {
 			t.Errorf("BuilderBackend = %q, want %q", cfg.BuilderBackend, "makepkg")
-		}
-	})
-
-	t.Run("analyzerConfig and uiPreferences absent left nil", func(t *testing.T) {
-		dir := t.TempDir()
-		cfgPath := filepath.Join(dir, "config.jsonc")
-		content := `{
-			"rootPath": "/tmp/aur",
-			"repositoryPath": "/tmp/repo",
-			"giteaBaseURL": "https://gitea.example.com",
-			"giteaOrg": "myorg",
-			"giteaToken": "secret"
-		}`
-		if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		cfg, err := Load(cfgPath)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if cfg.AnalyzerConfig != nil {
-			t.Errorf("AnalyzerConfig = %q, want nil", string(cfg.AnalyzerConfig))
-		}
-		if cfg.UIPreferences != nil {
-			t.Errorf("UIPreferences = %q, want nil", string(cfg.UIPreferences))
 		}
 	})
 }
@@ -405,7 +371,10 @@ func TestStripJSONCComments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := stripJSONCComments([]byte(tt.input))
+			got, err := stripJSONCComments([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("stripJSONCComments(%q) error = %v", tt.input, err)
+			}
 			if string(got) != tt.expect {
 				t.Errorf("stripJSONCComments(%q) = %q, want %q", tt.input, string(got), tt.expect)
 			}

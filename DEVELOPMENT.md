@@ -45,6 +45,104 @@ those, and they silently drop log fields.
   only shown up in manual runs, especially around the TUI and around
   asynchronous operations.
 
+### Manual testing
+
+Some situations are hard to reach in daily use. These are ways to set
+them up on purpose. The commands work in bash and fish unless marked
+otherwise. Replace `<ws>` with your workspace (the config's `rootPath`)
+and `<pkg>` with a package name. Each one says how to undo it.
+
+#### Run the new build
+
+Always run `./bin/aur-curator` from the repository after `make build`, not
+the copy on your `PATH`, which is the last one installed.
+
+#### A stale package
+
+To make the AUR check see a package as stale, point its review at an
+older AUR commit whose version differs from the AUR's.
+
+1. Back up the review:
+   `cp <ws>/.aur-curator/packages/<pkg>/review.json /tmp/<pkg>-review.json`
+2. List older commits that changed the PKGBUILD:
+   `git -C <ws>/<pkg> log --oneline upstream/master -- PKGBUILD`
+3. Check that one has a different version:
+   `git -C <ws>/<pkg> show <commit>:PKGBUILD | grep -E '^(epoch|pkgver|pkgrel)='`
+4. Get its full hash with `git -C <ws>/<pkg> rev-parse <commit>`, and the
+   review's current one with
+   `grep upstreamCommit <ws>/.aur-curator/packages/<pkg>/review.json`.
+5. Replace the current hash with the older one. This changes both `id`
+   and `upstreamCommit`:
+   `sed -i 's/<current-hash>/<older-hash>/g' <ws>/.aur-curator/packages/<pkg>/review.json`
+6. Start aur-curator and press `R`. Available shows the AUR's version.
+
+Undo: copy `/tmp/<pkg>-review.json` back.
+
+#### The AUR unreachable
+
+Block outgoing traffic to the AUR's addresses with nftables, in a table
+of its own (fish; needs root and `dig`):
+
+```fish
+sudo nft add table inet aurblock
+sudo nft add chain inet aurblock out '{ type filter hook output priority 0; }'
+for ip in (dig +short A aur.archlinux.org | grep -v '\.$'); sudo nft add rule inet aurblock out ip daddr $ip drop; end
+for ip in (dig +short AAAA aur.archlinux.org | grep -v '\.$'); sudo nft add rule inet aurblock out ip6 daddr $ip drop; end
+```
+
+Then press `R`. Available and the AUR card show `?`, and the failure is
+written to `<ws>/.aur-curator/errors.log`. The State column keeps its
+versions, which come from git. Going offline works too, but blocks
+everything else as well.
+
+Undo: `sudo nft delete table inet aurblock`.
+
+#### A fetch that times out
+
+Point the package's `upstream` remote at an address that never answers:
+`git -C <ws>/<pkg> remote set-url upstream https://10.255.255.1/x.git`,
+then Fetch.
+
+Undo: set it back with `git -C <ws>/<pkg> remote set-url upstream
+https://aur.archlinux.org/<pkg>.git`.
+
+#### Local commits
+
+Add a commit to `master` that is not on the AUR:
+`git -C <ws>/<pkg> commit --allow-empty -m "test: local commit"`. The
+Local column shows `1`, and Build asks for confirmation.
+
+Use a package you have merged. Until the first merge, `master` holds
+only Import's empty placeholder commit, and the count is skipped, so an
+empty commit on top of it shows nothing.
+
+Undo, as long as it has not been pushed:
+`git -C <ws>/<pkg> reset --hard HEAD~1`.
+
+#### Dashboard paging
+
+Paging needs more packages than fit on a page. A page holds as many rows
+as the terminal has room for, down to one, so make the terminal shorter
+until the list pages. Make it shorter still to see the "terminal too
+small" line, which replaces the Dashboard when not even one row fits.
+
+Undo: make the terminal taller again.
+
+#### Example packages
+
+| Case | Packages |
+| --- | --- |
+| Epoch in the version | `0wgram` (AUR `1:1.4.4-2`) |
+| VCS, `pkgver=` near the top and `pkgver()` lower down | fastfetch-git, yay-git, pfetch-git, neovim-git |
+
+To see where a package sets `pkgver` without importing it:
+`curl -s "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=<pkg>" | grep -nE '^\s*pkgver'`
+
+#### Config checks
+
+To try a config change, run `./bin/aur-curator <copy> check` against a
+copy of your real config rather than the config you use.
+
 ### Logging and debugging
 
 | Mechanism | Enable with | Purpose |
@@ -131,8 +229,9 @@ reconciled across every other doc it affects.
 ## Git workflow
 
 1. Every change starts with an issue.
-2. Create a branch from `main` whose name starts with the issue number,
-   e.g. `392-config-load-direct`. One branch per issue.
+2. Create a branch from `main` named `<type>/<issue>-<slug>`, e.g.
+   `fix/392-config-load-direct` or `docs/415-post-v1-cleanup`. One branch
+   per issue.
 3. Commit on the branch. Reference the issue (`Refs #N`, or `Closes #N`
    on the commit or PR that completes it).
 4. When build, tests, lint and the manual checks are clean, merge into

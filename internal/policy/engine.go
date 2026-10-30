@@ -36,7 +36,7 @@ type DefaultEngine struct {
 }
 
 // NewEngine constructs a DefaultEngine from cfg. cfg.Overrides (per
-// go-domain-structs.md § PolicyConfig — a JSON category → severity map)
+// domain.md § PolicyConfig — a JSON category → severity map)
 // is parsed once here, not on every Severity/Assess call: DefaultEngine
 // is a snapshot, not a live view. If PolicyConfig changes later, a new
 // DefaultEngine must be constructed to see it — no reload/refresh

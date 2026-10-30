@@ -1087,8 +1087,9 @@ func TestBuildEntriesPreservesPageSizeAfterResize(t *testing.T) {
 }
 
 // TestBuildEntriesBeforeFirstResize covers a data load completing before
-// any WindowSizeMsg has arrived (lastHeight == 0): page size must fall to
-// FlexHeight's floor, never zero or negative.
+// any WindowSizeMsg has arrived (lastHeight == 0): the height is unknown,
+// not small, so the page size is FlexHeight's floor (#450), never zero,
+// negative or the short-terminal floor of one row.
 func TestBuildEntriesBeforeFirstResize(t *testing.T) {
 	t.Parallel()
 
@@ -1102,6 +1103,9 @@ func TestBuildEntriesBeforeFirstResize(t *testing.T) {
 	if got := m.pkgList.PageSize(); got != widgets.MinFlexHeight {
 		t.Errorf("PageSize() before first resize = %d, want widgets.MinFlexHeight (%d)",
 			got, widgets.MinFlexHeight)
+	}
+	if m.TooSmall() {
+		t.Error("TooSmall() before the first resize: the height is not known yet")
 	}
 }
 

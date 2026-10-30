@@ -71,10 +71,8 @@ func TestLoad392_EveryFieldLoads(t *testing.T) {
 	fixture := map[string]string{
 		"rootPath":               `"/tmp/aur-workspace"`,
 		"repositoryPath":         `"/tmp/repo"`,
-		"builderBackend":         `"chroot"`,
+		"builderBackend":         `"makepkg"`, // the only accepted value (#408), so the default
 		"repoDBName":             `"other.db.tar.gz"`,
-		"analyzerConfig":         `{"a":1}`,
-		"uiPreferences":          `{"b":2}`,
 		"autoMerge":              `true`,
 		"autoAnalyzeAfterImport": `true`,
 		"giteaBaseURL":           `"https://git.example.com"`,

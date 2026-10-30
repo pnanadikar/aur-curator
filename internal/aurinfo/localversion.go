@@ -18,11 +18,11 @@ var (
 	// ErrNoUpstreamCommit: the review does not name the commit it covers.
 	ErrNoUpstreamCommit = errors.New("review has no upstream commit")
 	// ErrVersionNotReadable: the PKGBUILD was read, but its version cannot
-	// be taken from it — a pkgver() function, a missing pkgver or pkgrel,
-	// or a computed epoch, pkgver or pkgrel (ExtractFullVersion). It is a
+	// be taken from it — a missing pkgver or pkgrel, or a computed epoch,
+	// pkgver or pkgrel (ExtractFullVersion). It is a
 	// property of the package, true on every check, not a failure of this
 	// one (workflow.md § Update).
-	ErrVersionNotReadable = errors.New("version cannot be read from the PKGBUILD (pkgver() function, or pkgver/pkgrel missing, or epoch/pkgver/pkgrel computed)")
+	ErrVersionNotReadable = errors.New("version cannot be read from the PKGBUILD (pkgver/pkgrel missing, or epoch/pkgver/pkgrel computed)")
 )
 
 // LocalVersionResolver resolves a package's local version from its
@@ -62,18 +62,31 @@ func NewGitLocalVersionResolver(provider git.Provider, reviewDB domain.ReviewSto
 			return "", ErrNoUpstreamCommit
 		}
 
-		gitCtx, cancel := git.GitTimeoutCtx(ctx)
-		defer cancel()
-		content, err := provider.FileAtCommit(gitCtx, pkg, review.UpstreamCommit, "PKGBUILD")
-		if err != nil {
-			return "", fmt.Errorf("read PKGBUILD at %s: %w", shortCommit(review.UpstreamCommit), err)
-		}
-		ver, unknown := ExtractFullVersion(content)
-		if unknown {
-			return "", ErrVersionNotReadable
-		}
-		return ver, nil
+		return VersionAt(ctx, provider, pkg, review.UpstreamCommit)
 	}
+}
+
+// VersionAt returns the version ("[epoch:]pkgver-pkgrel",
+// ExtractFullVersion) of the PKGBUILD at commit. The git read runs under
+// its own git.GitTimeout. The error is the wrapped git error when the read
+// fails, or ErrVersionNotReadable when the PKGBUILD computes or lacks the
+// version; version is then "".
+//
+// The local version for the AUR check is VersionAt the reviewed commit
+// (NewGitLocalVersionResolver). The Dashboard's State column also uses it,
+// for display only (tui-dashboard-wireframe.md § State, #428).
+func VersionAt(ctx context.Context, provider git.Provider, pkg domain.PackageName, commit string) (string, error) {
+	gitCtx, cancel := git.GitTimeoutCtx(ctx)
+	defer cancel()
+	content, err := provider.FileAtCommit(gitCtx, pkg, commit, "PKGBUILD")
+	if err != nil {
+		return "", fmt.Errorf("read PKGBUILD at %s: %w", shortCommit(commit), err)
+	}
+	ver, unknown := ExtractFullVersion(content)
+	if unknown {
+		return "", ErrVersionNotReadable
+	}
+	return ver, nil
 }
 
 // shortCommit abbreviates a commit hash for messages.

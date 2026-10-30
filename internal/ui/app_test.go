@@ -1012,7 +1012,7 @@ func TestAURUpdateMsgReachesDashboardWhenInactive(t *testing.T) {
 	})
 	app = updated.(App)
 
-	if !strings.Contains(app.dashboard.View(), "1.0.0 → 2.0.0") {
+	if !strings.Contains(app.dashboard.View(), "2.0.0") {
 		t.Fatalf("AUR update missing from dashboard row:\n%s", app.dashboard.View())
 	}
 }

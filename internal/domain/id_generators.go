@@ -6,8 +6,8 @@ import (
 )
 
 // This file adds ID constructors alongside the existing type
-// declarations in ids.go (PackageName, ReviewID, FindingID, etc., per
-// go-domain-structs.md's Package Layout). It's a separate file rather
+// declarations in ids.go (PackageName, ReviewID, FindingID, etc.).
+// It's a separate file rather
 // than a manual edit to ids.go — Go doesn't require every ID-related
 // declaration to live in one file, and a new file avoids hand-merging
 // text into a file this session has never seen the current contents of.
@@ -15,7 +15,7 @@ import (
 // NewFindingID generates a new, unique FindingID. IDs are opaque random
 // strings — not sequential, not derived from content — which is
 // sufficient uniqueness at this project's ~10-12 package scale without
-// pulling in a UUID dependency. See go-domain-structs.md § Finding.
+// pulling in a UUID dependency. See domain.md § Finding.
 func NewFindingID() FindingID {
 	return FindingID(newRandomID())
 }

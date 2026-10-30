@@ -1,6 +1,6 @@
 # Developer Guide: aur-curator
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-30
 > Status: Active
 > Companion docs: `architecture.md`, `interfaces.md`, `domain.md`,
 > `workflow.md`, `ui-overview.md`; repository root `DEVELOPMENT.md`
@@ -58,6 +58,7 @@ config.Load(path)                        WorkspaceConfig (plain function, no pro
        remove    lock → NewDependencies → confirm → forge + stores + files
        check     lock → NewDependencies → consistency checks
        update    lock → NewDependencies → AUR check → prompts → FetchAndReview
+       outdated  lock → review store → AUR check → print the stale packages
 ```
 
 Every command takes `<rootPath>/.aur-curator/workspace.lock` first: one
@@ -70,10 +71,10 @@ running aur-curator per workspace.
 | `Git` | the provider from `main.go` | interface `git.Provider` |
 | `Catalog` | the catalog from `main.go` | interface `catalog.PackageCatalog` |
 | `ReviewDB`, `BuildDB`, `ArtifactDB` | JSON stores under `<rootPath>/.aur-curator/` | interfaces declared in `internal/domain` |
-| `Analyzers` | `analyzer.New(nil)` | `analyzerConfig` is not used |
+| `Analyzers` | `analyzer.New()` | no analyzer settings |
 | `Policy` | `policy.NewEngine(domain.PolicyConfig{})` | no user overrides are loaded yet |
 | `Reviews` | `*review.Engine` | concrete type |
-| `Builder` | `build.MakepkgBuilder{}` | always makepkg; `builderBackend` is not read |
+| `Builder` | `build.MakepkgBuilder{}` | always makepkg: `config.Load` accepts no other `builderBackend` (#408) |
 | `BuildEngine` | `*build.Engine` (builder, build and artifact stores, Git, paths) | concrete type; screens reach the stores through it too |
 | `Repo` | `domain.PackageRepository{Location: repositoryPath}` | |
 | `Publisher` | `publish.NewPublisher(...)` | |
@@ -612,8 +613,7 @@ known; fix it under its own issue, not as a side effect.
   (~1,170) and `ui/app.go` (~1,030, with six near-identical request cases in
   `update`).
 - **Unused or unread pieces:** `Dependencies.RepoStore`, `OperationLogMsg`
-  and `OperationsQueue.AppendLog` (#407); the `builderBackend`,
-  `analyzerConfig` and `uiPreferences` config keys (#408); `PolicyConfig`
-  overrides; the Settings screen.
+  and `OperationsQueue.AppendLog` (#407); `PolicyConfig` overrides; the
+  Settings screen.
 - **`OperationCompletedMsg.Result` is `any`**, narrowed by kind at each
   use. Revisit if per-kind result types become worth it.

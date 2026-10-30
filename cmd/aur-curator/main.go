@@ -27,6 +27,7 @@ import (
 	"github.com/pramod/aur-curator/internal/instancelock"
 	"github.com/pramod/aur-curator/internal/review"
 	"github.com/pramod/aur-curator/internal/store"
+	jsonstore "github.com/pramod/aur-curator/internal/store/json"
 	"github.com/pramod/aur-curator/internal/trace"
 	"github.com/pramod/aur-curator/internal/ui"
 	"github.com/pramod/aur-curator/internal/version"
@@ -91,6 +92,8 @@ func main() {
 		runCheck(cfg, pkgCatalog, provider)
 	case len(positional) == 2 && positional[1] == "update":
 		runUpdate(cfg, pkgCatalog, provider)
+	case len(positional) == 2 && positional[1] == "outdated":
+		runOutdated(cfg, pkgCatalog, provider)
 	default:
 		usage()
 		os.Exit(2)
@@ -103,8 +106,8 @@ var knownFlags = []string{"debug-log", "trace"}
 func usage() {
 	name := filepath.Base(os.Args[0])
 	fmt.Fprintf(os.Stderr,
-		"usage: %s [flags] <config-file>\n       %s [flags] <config-file> import <package-name>\n       %s [flags] <config-file> remove <package-name>\n       %s [flags] <config-file> check\n       %s [flags] <config-file> update\n",
-		name, name, name, name, name)
+		"usage: %s [flags] <config-file>\n       %s [flags] <config-file> import <package-name>\n       %s [flags] <config-file> remove <package-name>\n       %s [flags] <config-file> check\n       %s [flags] <config-file> update\n       %s [flags] <config-file> outdated\n",
+		name, name, name, name, name, name)
 }
 
 // showHelp checks if --help, -h, --version, or -version appears in args
@@ -831,21 +834,12 @@ func runUpdate(
 	}
 	trace.Log(ctx, "update", "phase", "aur_fetch", "count", len(check.Pairs))
 
-	plan := planUpdate(check.Pairs, d.ReviewDB.Get, func(pkg domain.PackageName, commit string) (bool, error) {
-		if commit == "" {
-			return false, nil
-		}
-		gitCtx, cancelGit := git.GitTimeoutCtx(ctx)
-		defer cancelGit()
-		// On error planUpdate treats the approval as not merged
-		// (fail-closed), asks about it on its own, and names the error.
-		return provider.IsMerged(gitCtx, pkg, commit)
-	})
+	plan := planUpdate(check.Pairs, d.ReviewDB.Get, mergedCheck(ctx, provider))
 	summary := newUpdateSummary(len(packages), plan)
 
 	// Step 3: Pending reviews the AUR has not moved past.
 	for _, pkg := range plan.pendingUpToDate {
-		fmt.Printf("%s: review pending, no newer AUR version.\n", pkg)
+		fmt.Printf("%s: review pending; it covers the AUR's current version.\n", pkg)
 	}
 
 	// Step 4: Stale packages. Those whose fetch would discard something —
@@ -880,4 +874,57 @@ func runUpdate(
 	}
 	summary.print(os.Stdout, os.Stderr)
 	os.Exit(summary.exitCode())
+}
+
+// mergedCheck returns planUpdate's merged function: whether an approved
+// review's commit is on local master, each check under its own git
+// timeout. On error planUpdate treats the approval as not merged
+// (fail-closed) and names the error.
+func mergedCheck(ctx context.Context, provider git.Provider) func(domain.PackageName, string) (bool, error) {
+	return func(pkg domain.PackageName, commit string) (bool, error) {
+		if commit == "" {
+			return false, nil
+		}
+		gitCtx, cancelGit := git.GitTimeoutCtx(ctx)
+		defer cancelGit()
+		return provider.IsMerged(gitCtx, pkg, commit)
+	}
+}
+
+// runOutdated prints the curated packages the AUR has a different version
+// for, one per line, and changes nothing (workflow.md § Outdated, #403).
+// It runs update's scan and stops there: one AUR request and local git
+// reads, no fetch, no store or log writes. It takes the workspace lock like
+// every command. Errors go to stderr only, so a status bar running it
+// every few minutes cannot fill the error log.
+func runOutdated(
+	cfg domain.WorkspaceConfig,
+	pkgCatalog catalog.PackageCatalog,
+	provider git.Provider,
+) {
+	release := acquireWorkspaceLock(cfg, "aur-curator outdated")
+	defer func() { _ = release() }()
+	ctx := trace.Start(context.Background(), "outdated")
+
+	packages, err := pkgCatalog.Packages(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "outdated: catalog error: %v\n", err)
+		os.Exit(exitOutdatedFailed)
+	}
+	if len(packages) == 0 {
+		os.Exit(exitOutdatedOK)
+	}
+
+	// Only what the scan reads: the review store, not NewDependencies.
+	reviews := jsonstore.NewReviewStore(store.NewStorePaths(cfg.RootPath))
+	aurClient := aurinfo.NewClient("https://aur.archlinux.org/rpc/", 15*time.Second, aurinfo.NewGitLocalVersionResolver(provider, reviews))
+	check := aurClient.BulkCheck(ctx, packages)
+	if check.Err != nil {
+		fmt.Fprintf(os.Stderr, "outdated: AUR request failed: %s\n", aurRequestReason(check.Err))
+		os.Exit(exitOutdatedFailed)
+	}
+	trace.Log(ctx, "outdated", "phase", "aur_fetch", "count", len(check.Pairs))
+
+	plan := planUpdate(check.Pairs, reviews.Get, mergedCheck(ctx, provider))
+	os.Exit(printOutdated(os.Stdout, os.Stderr, packages, plan))
 }

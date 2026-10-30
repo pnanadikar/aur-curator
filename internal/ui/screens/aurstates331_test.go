@@ -29,11 +29,11 @@ func TestFormatAvailable(t *testing.T) {
 		{"package missing from results", true, nil, aurinfo.VersionPair{}, false, "?"},
 		{"not on AUR", true, nil, aurinfo.VersionPair{Pkg: "yay", LocalVersion: "1.0-1", AURUnknown: true}, true, "not on AUR"},
 		{"local version unknown", true, nil, aurinfo.VersionPair{Pkg: "yay", AURVersion: "1.0-1", LocalUnknown: true}, true, "?"},
-		{"newer on AUR", true, nil, newer, true, "1.1-1 → 1.2-1"},
+		{"newer on AUR: only the AUR version (#428)", true, nil, newer, true, "1.2-1"},
 		{"nothing newer", true, nil, same, true, "—"},
-		{"newer, pair too long for the column", true, nil,
+		{"newer, long version: whole, the column cuts it", true, nil,
 			aurinfo.VersionPair{Pkg: "edge", AURVersion: "155.0.4283.21-1", LocalVersion: "155.0.4283.13-1", AURStale: true},
-			true, "→ 155.0.4283.21-1"},
+			true, "155.0.4283.21-1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,7 +59,7 @@ func TestAURUpdateMsgStates(t *testing.T) {
 	}
 
 	m, _ = m.Update(msgs.AURUpdateMsg{Pairs: []aurinfo.VersionPair{newer}, TraceCtx: ctx})
-	if got := m.availableFor("yay"); got != "1.1-1 → 1.2-1" {
+	if got := m.availableFor("yay"); got != "1.2-1" {
 		t.Fatalf("after success: %q", got)
 	}
 	if !m.aurStaleByPkg["yay"] || m.summary[CardAUR].Unknown {
@@ -78,7 +78,7 @@ func TestAURUpdateMsgStates(t *testing.T) {
 	}
 
 	m, _ = m.Update(msgs.AURUpdateMsg{Pairs: []aurinfo.VersionPair{newer}, TraceCtx: ctx})
-	if got := m.availableFor("yay"); got != "1.1-1 → 1.2-1" || m.summary[CardAUR].Unknown {
+	if got := m.availableFor("yay"); got != "1.2-1" || m.summary[CardAUR].Unknown {
 		t.Fatalf("after recovery: %q, cardUnknown=%v", got, m.summary[CardAUR].Unknown)
 	}
 }

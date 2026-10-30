@@ -1,7 +1,5 @@
 package domain
 
-import "encoding/json"
-
 // Secret must never be logged, printed, or included in error messages.
 // String()/GoString() are redacted so fmt verbs (the most common
 // accidental-leak path) can't expose the underlying value.
@@ -29,22 +27,14 @@ type WorkspaceConfig struct {
 	// Mandatory.
 	RepositoryPath string `json:"repositoryPath"`
 
-	// BuilderBackend selects the Builder implementation, e.g. "makepkg".
-	// Optional; defaults to "makepkg" if absent.
+	// BuilderBackend selects the Builder implementation. Optional;
+	// defaults to "makepkg", the only value config.Load accepts (#408).
 	BuilderBackend string `json:"builderBackend"`
 
 	// RepoDBName is the filename of the local pacman repository database
 	// archive used by repo-add. Optional — defaults to "custom.db.tar.gz"
 	// if absent.
 	RepoDBName string `json:"repoDBName"`
-
-	// AnalyzerConfig is opaque; shape owned by Analyzer Manager, not yet
-	// designed. Optional — genuinely absent is valid.
-	AnalyzerConfig json.RawMessage `json:"analyzerConfig"`
-
-	// UIPreferences is opaque; shape owned by the UI layer, not yet
-	// designed. Optional — same status as AnalyzerConfig.
-	UIPreferences json.RawMessage `json:"uiPreferences"`
 
 	// AutoMerge, when true, triggers git.Provider.Merge automatically
 	// as a follow-on to a successful Approve decision — no confirmation
@@ -71,9 +61,8 @@ type WorkspaceConfig struct {
 	// ActivityLogPath is the filesystem path for the always-on,
 	// append-only activity log — one line per lifecycle event
 	// (import/approve/reject/merge/build/confirm/publish), success and
-	// failure both recorded. Distinct from AnalyzerConfig/UIPreferences:
-	// this is a defaulted string field (pattern matches BuilderBackend/
-	// RepoDBName), not an opaque placeholder. Optional — defaults to
+	// failure both recorded. A defaulted string field, like
+	// BuilderBackend and RepoDBName. Optional — defaults to
 	// ".aur-curator/activity.log" relative to RootPath if absent.
 	//
 	// This field is separate from the two existing logging mechanisms:

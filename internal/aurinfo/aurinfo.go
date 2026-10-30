@@ -26,11 +26,6 @@ var (
 // against raw file lines — no diff-prefix stripping needed.
 var ScalarRe = regexp.MustCompile(`^\s*(epoch|pkgver|pkgrel)\s*=\s*(.+?)\s*$`)
 
-// PkgverFuncRe matches a pkgver() function definition header.
-// When present, the version is dynamically computed and cannot be
-// parsed as a plain scalar assignment.
-var PkgverFuncRe = regexp.MustCompile(`^\s*pkgver\s*\(\s*\)\s*\{`)
-
 // VersionPair holds the AUR-reported and locally-parsed version
 // information for a single package.
 type VersionPair struct {
@@ -220,8 +215,9 @@ func (c *Client) buildURL(pkgs []domain.PackageName) string {
 // ExtractScalar scans raw text and returns the first scalar value for
 // the given name matched by ScalarRe. Returns ("", true) when no match
 // is found, when the value is computed rather than assigned (it contains
-// a $ or ` expansion, #433), or, for pkgver, when the PKGBUILD starts
-// with a pkgver() function.
+// a $ or ` expansion, #433). A pkgver() function does not make pkgver
+// unknown: the plain assignment is read as for any other package, as the
+// AUR does (workflow.md § Local Version, VCS packages, #434).
 //
 // ExtractScalar is exported so callers (e.g. the update command) can
 // parse PKGBUILD content retrieved via git.FileAtCommit without
@@ -236,12 +232,8 @@ func ExtractScalar(raw string, name string) (string, bool) {
 
 // scanScalar finds the first assignment to name. found is false when
 // there is none; computed is true when its value is an expansion rather
-// than a literal, or (pkgver only) when a pkgver() function is detected.
+// than a literal.
 func scanScalar(raw string, name string) (val string, found, computed bool) {
-	// If a pkgver() function is present, treat the version as unknown.
-	if name == "pkgver" && PkgverFuncRe.MatchString(raw) {
-		return "", true, true
-	}
 	for _, line := range strings.Split(raw, "\n") {
 		m := ScalarRe.FindStringSubmatch(line)
 		if m == nil || m[1] != name {

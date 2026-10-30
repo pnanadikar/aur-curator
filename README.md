@@ -147,13 +147,17 @@ Optional settings:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `repoDBName` | `custom.db.tar.gz` | Repository database file name. The part before `.db` is the repository name in `pacman.conf`. |
-| `builderBackend` | `makepkg` | Build backend. `makepkg` is currently the only one. |
+| `builderBackend` | `makepkg` | Build backend. `makepkg` is currently the only one; any other value is an error. |
 | `autoMerge` | `false` | Merge as soon as you Approve a review, instead of waiting for you to press Merge. Nothing is ever merged without an Approve. |
 | `autoAnalyzeAfterImport` | `false` | Run the analyzers right after an Import. |
 | `activityLogPath` | `<rootPath>/.aur-curator/activity.log` | Human-readable log of every import, decision, merge, build, confirm and publish. |
 
 The file is JSON with comments (`//` and `/* */`). Trailing commas are not
-allowed. Unknown keys are ignored, so check spelling.
+allowed. Paths must be absolute or start with `~/`. `repoDBName` must end
+in `.db.tar.gz`, and `repositoryPath` must not be inside `rootPath` (or
+the other way round). aur-curator warns about keys it does not know, and
+refuses to start if a key differs from a known one only in case
+(`AutoMerge`).
 
 ### 4. The local pacman repository
 
@@ -192,6 +196,7 @@ machine that builds.
 aur-curator [flags] <config-file>                        start the TUI
 aur-curator [flags] <config-file> import <package-name>  curate a new package
 aur-curator [flags] <config-file> update                 check curated packages against the AUR
+aur-curator [flags] <config-file> outdated               list packages the AUR has something different for
 aur-curator [flags] <config-file> check                  run consistency checks
 aur-curator [flags] <config-file> remove <package-name>  stop curating a package
 ```
@@ -258,6 +263,35 @@ Run `aur-curator --help` for flags and details.
   | 0 | Nothing to review |
   | 10 | At least one review is pending — open the TUI |
   | 1 | A check or fetch failed (named above the summary) |
+
+- `outdated` lists the packages the AUR has a different version for, one
+  per line, without fetching or changing anything:
+
+  ```text
+  pfetch 1.11.0-1 -> 1.12.0-1
+  yay 12.4.1-1 -> 12.4.2-1 (older review pending)
+  ```
+
+  It exits 0 whether or not anything is listed, and 1 when a check failed
+  or the AUR could not be reached; errors go to stderr. Like every
+  command, it does not run while the TUI is open. A status bar can count
+  its lines, for example a waybar module:
+
+  ```jsonc
+  "custom/aur": {
+    "exec": "aur-curator ~/.config/aur-curator/aur-curator.jsonc outdated | wc -l",
+    "interval": 1800,
+    "format": "AUR {}"
+  }
+  ```
+
+  or a fish function for a shell greeting:
+
+  ```fish
+  function aur_outdated
+      aur-curator ~/.config/aur-curator/aur-curator.jsonc outdated 2>/dev/null
+  end
+  ```
 
 - Review, merge, build, confirm and publish as above.
 - Upgrade with `sudo pacman -Syu`, as for any other repository.

@@ -174,7 +174,8 @@ func TestNewGitLocalVersionResolver_Unknown(t *testing.T) {
 	storeErr := errors.New("store error")
 	fileErr := errors.New("file error")
 	const static = "pkgname=testpkg\npkgver=1.0\npkgrel=1\n"
-	// Same shape as TestExtractFullVersion_DynamicPkgver.
+	// A pkgver() function and no pkgver assignment: pkgver is missing
+	// (#434; same shape as a case in TestExtractFullVersion_VCS434).
 	const dynamic = "pkgver() {\n  git describe\n}\npkgrel=1\n"
 	tests := []struct {
 		name      string
@@ -189,8 +190,8 @@ func TestNewGitLocalVersionResolver_Unknown(t *testing.T) {
 		{"review store error", &mockReviewStore{err: storeErr}, static, nil, storeErr, "read review: store error", 0},
 		{"review without UpstreamCommit", reviewed(""), static, nil, ErrNoUpstreamCommit, "no upstream commit", 0},
 		{"PKGBUILD read fails", reviewed("reviewed456789"), static, fileErr, fileErr, "read PKGBUILD at reviewe: file error", 1},
-		{"pkgver() function", reviewed("reviewed456789"), dynamic, nil, ErrVersionNotReadable, "pkgver()", 1},
-		{"no pkgver", reviewed("reviewed456789"), "pkgname=testpkg\n", nil, ErrVersionNotReadable, "pkgver()", 1},
+		{"pkgver() function, no pkgver assignment", reviewed("reviewed456789"), dynamic, nil, ErrVersionNotReadable, "pkgver/pkgrel missing", 1},
+		{"no pkgver", reviewed("reviewed456789"), "pkgname=testpkg\n", nil, ErrVersionNotReadable, "pkgver/pkgrel missing", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -209,6 +210,18 @@ func TestNewGitLocalVersionResolver_Unknown(t *testing.T) {
 				t.Errorf("FileAtCommit called %d times, want %d", len(provider.fileCommits), tt.wantReads)
 			}
 		})
+	}
+}
+
+// #428 — VersionAt reads the given commit, whatever the review says.
+func TestVersionAt(t *testing.T) {
+	provider := &mockProvider{fileContent: "pkgname=p\nepoch=2\npkgver=1.0\npkgrel=3\n"}
+	ver, err := VersionAt(context.Background(), provider, "p", "base789")
+	if err != nil || ver != "2:1.0-3" {
+		t.Errorf("got (%q, %v), want (\"2:1.0-3\", nil)", ver, err)
+	}
+	if want := []string{"base789"}; !equalStrings(provider.fileCommits, want) {
+		t.Errorf("FileAtCommit commits = %v, want %v", provider.fileCommits, want)
 	}
 }
 

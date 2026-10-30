@@ -62,7 +62,7 @@ const reasonNotOnAUR = "not on the AUR"
 // updatePlan is what update offers, in the order it offers it, and what
 // the scan found about every other package (workflow.md § Update).
 type updatePlan struct {
-	pendingUpToDate []domain.PackageName  // pending, AUR not newer: one informational line each
+	pendingUpToDate []domain.PackageName  // pending, AUR version the same: one informational line each
 	individual      []individualCandidate // asked one by one, with a warning
 	batch           []updateCandidate     // the y/n/a/q list (#424)
 

@@ -31,18 +31,6 @@ pkgrel=3
 	}
 }
 
-func TestExtractScalar_DynamicVersion(t *testing.T) {
-	raw := `pkgver() {
-  pkgver=1.0
-  sed -n 's/^Version: //p' "$pkgname/PKGBUILD"
-}
-`
-	_, unknown := extractScalar(raw, "pkgver")
-	if !unknown {
-		t.Error("expected unknown = true for dynamic version (contains $pkgver)")
-	}
-}
-
 func TestExtractScalar_Pkgrel(t *testing.T) {
 	raw := `pkgname=somepkg
 pkgver=1.0
@@ -140,15 +128,49 @@ pkgrel=4
 	}
 }
 
-func TestExtractFullVersion_DynamicPkgver(t *testing.T) {
-	raw := `pkgver() {
-  pkgver=1.0
+// #434 — a pkgver() function does not make the version unknown: the
+// plain pkgver assignment is read, as the AUR reports it (workflow.md
+// § Local Version, VCS packages). Without one, pkgver is missing.
+func TestExtractFullVersion_VCS434(t *testing.T) {
+	const gitPkgver = `pkgver() {
+  cd "$srcdir/foo"
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
-pkgrel=2
 `
-	_, unknown := ExtractFullVersion(raw)
-	if !unknown {
-		t.Error("expected unknown = true when pkgver uses dynamic function")
+	tests := []struct {
+		name        string
+		raw         string
+		want        string
+		wantUnknown bool
+	}{
+		{
+			"typical -git PKGBUILD",
+			"# Maintainer: someone\npkgname=foo-git\npkgver=r123.abc1234\npkgrel=1\narch=('x86_64')\nsource=('git+https://example.com/foo.git')\n\n" + gitPkgver + "\nbuild() {\n  make\n}\n",
+			"r123.abc1234-1", false,
+		},
+		{
+			"git describe version with epoch",
+			"pkgname=bar-git\nepoch=1\npkgver=2.0.r4.gdef5678\npkgrel=2\n" + gitPkgver,
+			"1:2.0.r4.gdef5678-2", false,
+		},
+		{
+			"pkgver() first, assignment after",
+			gitPkgver + "pkgver=0.1.r1.g1234567\npkgrel=1\n",
+			"0.1.r1.g1234567-1", false,
+		},
+		{
+			"pkgver() and no pkgver assignment",
+			gitPkgver + "pkgrel=1\n",
+			"", true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			val, unknown := ExtractFullVersion(tt.raw)
+			if val != tt.want || unknown != tt.wantUnknown {
+				t.Errorf("ExtractFullVersion() = (%q, %v), want (%q, %v)", val, unknown, tt.want, tt.wantUnknown)
+			}
+		})
 	}
 }
 

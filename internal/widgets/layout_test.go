@@ -57,3 +57,32 @@ func TestFlexHeight(t *testing.T) {
 		})
 	}
 }
+
+// TestFlexRows: the rows left with no floor, so a screen can tell when
+// not even one row fits (#450).
+func TestFlexRows(t *testing.T) {
+	t.Parallel()
+
+	frame := theme.SectionBorderStyle().GetVerticalFrameSize()
+	fixed := []string{"line 1", "line 2", "line 3"}
+	for _, tc := range []struct {
+		name  string
+		total int
+		want  int
+	}{
+		{"room left", 20, 20 - frame - 3},
+		{"exactly one row", frame + 4, 1},
+		{"none left", frame + 3, 0},
+		{"short by two", frame + 1, -2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := FlexRows(tc.total, fixed...); got != tc.want {
+				t.Errorf("FlexRows(%d) = %d, want %d", tc.total, got, tc.want)
+			}
+		})
+	}
+	if got, want := FlexHeight(frame+1, fixed...), MinFlexHeight; got != want {
+		t.Errorf("FlexHeight keeps its floor: got %d, want %d", got, want)
+	}
+}

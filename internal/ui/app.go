@@ -632,8 +632,15 @@ func (a App) viewScreen() string {
 	}
 }
 
-// renderDashboardBox wraps the dashboard body in a full-width box.
+// renderDashboardBox wraps the dashboard body in a full-width box. When
+// not even one package row fits, it shows one line saying so instead, so
+// the selected row is never cut off by capBody
+// (tui-dashboard-wireframe.md § 6, #450).
 func (a App) renderDashboardBox() string {
+	if a.dashboard.TooSmall() {
+		lines, cols := a.dashboard.RecommendedSize(a.height)
+		return fmt.Sprintf("Terminal too small: At least %d lines and %d columns recommended.", lines, cols)
+	}
 	body := a.dashboard.View()
 	if body == "" {
 		return ""

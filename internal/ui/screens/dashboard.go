@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/pramod/aur-curator/internal/git"
 	"github.com/pramod/aur-curator/internal/lifecycle"
 	"github.com/pramod/aur-curator/internal/overlay"
+	"github.com/pramod/aur-curator/internal/theme"
 	"github.com/pramod/aur-curator/internal/trace"
 	"github.com/pramod/aur-curator/internal/ui/msgs"
 	"github.com/pramod/aur-curator/internal/widgets"
@@ -52,7 +54,9 @@ type ReviewDataMsg struct {
 	// means the check failed and LocalCommits is meaningless.
 	LocalCommits    int
 	LocalCommitsErr error
-	TraceCtx        context.Context
+	// Versions are the versions the State column shows (#428).
+	Versions widgets.StateVersions
+	TraceCtx context.Context
 }
 
 // CardID identifies a summary card by name rather than positional index.
@@ -159,6 +163,9 @@ type DashboardModel struct {
 	toolbar widgets.DashboardToolbar
 	pkgList widgets.LifecycleList
 	keys    dashboardKeys
+
+	// stateVersions are the State column's versions per package (#428).
+	stateVersions map[domain.PackageName]widgets.StateVersions
 }
 
 type dashboardKeys struct {
@@ -452,9 +459,14 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 				m.localCommits = make(map[domain.PackageName]localCommitsResult)
 			}
 			m.localCommits[msg.Pkg] = localCommitsResult{n: msg.LocalCommits, err: msg.LocalCommitsErr}
+			if m.stateVersions == nil {
+				m.stateVersions = make(map[domain.PackageName]widgets.StateVersions)
+			}
+			m.stateVersions[msg.Pkg] = msg.Versions
 		} else {
 			// The count was not checked; show nothing rather than a stale value.
 			delete(m.localCommits, msg.Pkg)
+			delete(m.stateVersions, msg.Pkg)
 		}
 		m.lifecycle[msg.Pkg] = newState
 		m.reviewInputs[msg.Pkg] = reviewInputs{
@@ -732,16 +744,9 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 		case tea.KeyMsg:
 			switch msg.String() {
 			case "up", "k":
-				if m.pkgList.Cursor() > 0 {
-					m.pkgList.SetCursor(m.pkgList.Cursor() - 1)
-				}
+				m.pkgList.CursorUp()
 			case "down", "j":
-				visible := m.pkgList.VisibleEntries()
-				if m.pkgList.Cursor() < len(visible)-1 {
-					m.pkgList.SetCursor(m.pkgList.Cursor() + 1)
-				} else if m.pkgList.Cursor() == len(visible)-1 && len(visible) == m.pkgList.PageSize() {
-					m.pkgList.NextPage()
-				}
+				m.pkgList.CursorDown()
 			case "enter":
 				entries := m.pkgList.VisibleEntries()
 				if len(entries) > 0 && m.pkgList.Cursor() < len(entries) {
@@ -762,19 +767,51 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 }
 
 // fixedPartsAboveList returns the parts rendered above the package list,
-// in render order: nav menu, summary cards, toolbar.
+// in render order: nav menu, summary cards, toolbar, and the table's
+// header row (#448).
 func (m DashboardModel) fixedPartsAboveList() []string {
-	return []string{m.renderNavMenu(), m.renderSummaryCards(), m.toolbar.View()}
+	return []string{m.renderNavMenu(), m.renderSummaryCards(), m.toolbar.View(), m.pkgList.HeaderRow()}
 }
 
-// listPageSize returns the rows remaining for the package list after the
-// screen's own chrome — the nav menu, summary cards, toolbar, and action
-// bar, plus the section-box frame the App wraps around this screen — via
-// FlexHeight. The App has already subtracted its own chrome from height
-// before it reaches here.
-func (m DashboardModel) listPageSize(height int) int {
+// listRowsLeft returns the rows left for the package list after the
+// screen's own chrome — the nav menu, summary cards, toolbar, header row
+// and action bar, plus the section-box frame the App wraps around this
+// screen — with no floor (widgets.FlexRows). The App has already
+// subtracted its own chrome from height before it reaches here.
+func (m DashboardModel) listRowsLeft(height int) int {
 	parts := append(m.fixedPartsAboveList(), m.renderActionBar())
-	return widgets.FlexHeight(height, parts...)
+	return widgets.FlexRows(height, parts...)
+}
+
+// listPageSize returns the page size for height: every row left, down to
+// one, so the page always fits and the selected row is never cut off
+// (tui-dashboard-wireframe.md § Page Size, #450). Other screens keep
+// FlexHeight's floor. Before the first window size arrives (height 0) the
+// height is unknown, not small, so the page gets FlexHeight's floor until
+// it does.
+func (m DashboardModel) listPageSize(height int) int {
+	if height <= 0 {
+		return widgets.MinFlexHeight
+	}
+	return max(m.listRowsLeft(height), 1)
+}
+
+// TooSmall reports whether not even one package row fits, so the App
+// shows the "terminal too small" line instead of the Dashboard
+// (tui-dashboard-wireframe.md § 6, #450). It is false until the package
+// table is shown and the height is known.
+func (m DashboardModel) TooSmall() bool {
+	return m.allData && m.lastHeight > 0 && m.listRowsLeft(m.lastHeight) < 1
+}
+
+// RecommendedSize returns the terminal size the "terminal too small" line
+// recommends, given the terminal's height: lines at which a page holds
+// widgets.MinFlexHeight rows, and columns at which the Dashboard's widest
+// line is not cut (App.renderDashboardBox, widgets.WrapScreenBody).
+func (m DashboardModel) RecommendedSize(terminalHeight int) (lines, cols int) {
+	lines = terminalHeight + max(widgets.MinFlexHeight-m.listRowsLeft(m.lastHeight), 0)
+	cols = max(lipgloss.Width(m.View()), theme.MinScreenWidth) + widgets.ScreenBodyMargin
+	return lines, cols
 }
 
 // View renders the dashboard screen.
@@ -901,6 +938,7 @@ func (m *DashboardModel) buildEntries(ctx context.Context, caller string) {
 			Risk:                m.riskFor(review, m.lifecycle[pkg]),
 			LocalCommits:        lc.n,
 			LocalCommitsUnknown: lc.err != nil,
+			Versions:            m.stateVersions[pkg],
 		}
 	}
 	m.pkgList = widgets.NewLifecycleList(entries)
@@ -986,12 +1024,9 @@ func formatAvailable(checked bool, checkErr error, pair aurinfo.VersionPair, fou
 	case pair.LocalUnknown, pair.AURVersion == "", pair.LocalVersion == "":
 		return "?"
 	case pair.AURStale:
-		// A long pair would be cut mid-version and could read like a
-		// downgrade; show just the target when it does not fit (#331).
-		if full := pair.LocalVersion + " → " + pair.AURVersion; len([]rune(full)) <= widgets.AvailableColWidth {
-			return full
-		}
-		return "→ " + pair.AURVersion
+		// Only the AUR's version: State shows the reviewed one (#428).
+		// One too long for the column is cut with "…" when drawn.
+		return pair.AURVersion
 	default:
 		return "—"
 	}
@@ -1164,6 +1199,10 @@ func (m *DashboardModel) UpdateFromReview(ctx context.Context, pkg domain.Packag
 		HeadCommit: headCommit,
 	}
 	m.reviewsByPkg[pkg] = review
+	if m.stateVersions == nil {
+		m.stateVersions = make(map[domain.PackageName]widgets.StateVersions)
+	}
+	m.stateVersions[pkg] = m.readStateVersions(ctx, pkg, review, isMerged, headCommit)
 	cursor := m.pkgList.Cursor()
 	var selectedPkg domain.PackageName
 	visible := m.pkgList.VisibleEntries()
@@ -1236,6 +1275,8 @@ func (m *DashboardModel) LoadReviewCmd(ctx context.Context, pkg domain.PackageNa
 			trace.Log(ctx, "ReviewDataMsg", "check", "LocalOnlyCommits", "pkg", pkg, "error", localCommitsErr.Error())
 		}
 
+		versions := m.readStateVersions(ctx, pkg, review, isMerged, headCommit)
+
 		return ReviewDataMsg{
 			Pkg:             pkg,
 			Status:          status,
@@ -1246,9 +1287,57 @@ func (m *DashboardModel) LoadReviewCmd(ctx context.Context, pkg domain.PackageNa
 			HeadCommit:      headCommit,
 			LocalCommits:    localCommits,
 			LocalCommitsErr: localCommitsErr,
+			Versions:        versions,
 			TraceCtx:        ctx,
 		}
 	}
+}
+
+// readStateVersions reads the versions the State column shows for a
+// package (tui-dashboard-wireframe.md § State, #428): before the merge,
+// the review's reviewed version and, unless it is a first review, its base
+// version; after the merge, the version at master HEAD. isMerged and
+// headCommit are the caller's results, the ones the lifecycle state is
+// derived from. Each read runs under its own git timeout (VersionAt).
+//
+// A failed git read is written to the error log and leaves that version
+// "", as does a version the PKGBUILD computes or lacks, which is a
+// property of the package and is not logged. The base is read only when
+// the reviewed version was, since State never shows half a pair.
+func (m DashboardModel) readStateVersions(ctx context.Context, pkg domain.PackageName, review *domain.Review, isMerged bool, headCommit string) widgets.StateVersions {
+	var v widgets.StateVersions
+	if review == nil || m.deps.Git == nil {
+		return v
+	}
+	read := func(what, commit string) string {
+		if commit == "" {
+			return ""
+		}
+		ver, err := aurinfo.VersionAt(ctx, m.deps.Git, pkg, commit)
+		if err != nil && !errors.Is(err, aurinfo.ErrVersionNotReadable) {
+			trace.Log(ctx, "readStateVersions", "pkg", pkg, "version", what, "error", err.Error())
+			_ = errorlog.Logf(ctx, m.deps.Config.RootPath, "version", "read %s version of %q: %v", what, pkg, err)
+		}
+		return ver
+	}
+	switch review.Status {
+	case domain.ReviewApproved:
+		if isMerged {
+			v.Head = read("master HEAD", headCommit)
+			return v
+		}
+		fallthrough
+	case domain.ReviewPending:
+		v.Reviewed = read("reviewed", review.UpstreamCommit)
+		if review.BaseCommit == "" {
+			v.FirstReview = true
+		} else if v.Reviewed != "" {
+			v.Base = read("base", review.BaseCommit)
+		}
+	case domain.ReviewRejected:
+		v.Reviewed = read("reviewed", review.UpstreamCommit)
+	}
+	return v
 }
 
 // loadAURUpdatesCmd performs a bulk AUR update check for all currently

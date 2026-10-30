@@ -826,9 +826,7 @@ Code: `workspace.go`; loading in `internal/config`.
 | autoMerge | Merge automatically after a successful Approve, with no prompt; otherwise the review stays Approved until the user merges | Optional — defaults to false |
 | autoAnalyzeAfterImport | Run analyzers automatically after a successful Import (Import's clone already establishes `upstream/master`, so no Fetch is needed). A failed auto-analyze is reported but does not undo Import | Optional — defaults to false |
 | activityLogPath | The always-on, append-only activity log | Optional — defaults to `<rootPath>/.aur-curator/activity.log` |
-| builderBackend | Builder implementation | Optional — defaults to `makepkg`; **currently ignored**, `makepkg` is always used (#408) |
-| analyzerConfig | Opaque analyzer settings, shape not yet designed | Optional placeholder — **currently ignored** (#408) |
-| uiPreferences | Opaque UI preferences, shape not yet designed | Optional placeholder — **currently ignored** (#408) |
+| builderBackend | Builder implementation. `makepkg` is the only one; the key is there for a future sandboxed backend | Optional — defaults to `makepkg`; any other value is an error (#408) |
 
 The activity log (one human-readable line per lifecycle event — import,
 approve, reject, merge, build, confirm, publish — success and failure
@@ -855,20 +853,63 @@ loaded. A new field needs only a tag;
 `TestLoad392_EveryFieldLoads` in `internal/config` fails if a field has no
 tag or no fixture entry. (#392: `autoMerge`, and earlier
 `autoAnalyzeAfterImport` (#146), were silently never loaded because a
-separate hand-copied file struct lacked them.) Unknown keys in the file
-are currently ignored; whether to reject them is open (#408).
+separate hand-copied file struct lacked them.)
+
+`analyzerConfig` and `uiPreferences` were opaque placeholders with no
+design behind them and were never read; #408 removed them. They come back
+when their shape is designed.
+
+### Validation
+
+`config.Load` checks the file before anything else runs. Errors stop the
+program; warnings go to stderr and do not (#408).
+
+**Comments.** `//` and `/* */`, outside strings. An unterminated `/*` is an
+error: it would otherwise swallow the rest of the file, and the keys after
+it would quietly fall back to their defaults.
+
+**Keys.**
+
+- A key that matches a known key only by case (`AutoMerge`) is an error.
+  `encoding/json` matches keys case-insensitively, so such a key would be
+  applied, not ignored; the user is made to fix the spelling instead.
+- Any other unknown key is a **warning**, naming the key. A misspelling
+  is caught without breaking a config that carries a key from another
+  version.
+
+**Values.** Every string value has leading and trailing whitespace removed
+before it is checked or used.
+
+| Key | Rule |
+| --- | --- |
+| rootPath, repositoryPath | Not empty. A leading `~` or `~/` is expanded to the home directory; the result must be absolute, and is cleaned (`filepath.Clean`) |
+| activityLogPath | When set: as above |
+| repositoryPath | Not the same as `rootPath`, and neither inside the other. The catalog treats every subdirectory of `rootPath` as a package |
+| giteaBaseURL | Not empty; parses as a URL with scheme `http` or `https` and a host |
+| giteaOrg | Not empty; no `/` |
+| giteaToken | See § Secret Handling: a blank value counts as not set |
+| repoDBName | A plain file name (no `/`) ending in `.db.tar.gz`, with a name before `.db`. `repo-add` accepts other compressions, but `internal/repodb` reads gzip only |
+| builderBackend | `makepkg` |
+
+**Not checked:** whether directories exist (Publish creates the repository
+directory; the code that uses a path reports its errors), duplicate keys
+(the last one wins), and a UTF-8 byte-order mark (rejected as invalid
+JSON).
 
 ### Secret Handling: GiteaToken
 
 1. **Precedence:** `AUR_CURATOR_GITEA_TOKEN`, if set, overrides the file's
    `giteaToken` key outright — a user who wants no secret on disk never
    sets the key at all. `config.Load` checks the env var first, and errors
-   only if **both** sources are absent. (`giteaBaseURL` and `giteaOrg`
-   have no alternate source and are checked against the file alone.)
+   only if **both** sources are absent. A value that is empty or only
+   whitespace counts as absent, in either source; `GiteaTokenSource`
+   applies the same rule. (`giteaBaseURL` and `giteaOrg` have no
+   alternate source and are checked against the file alone.)
 2. **File permissions:** if the token comes from the file, `config.Load`
    warns — it does not refuse to start — if the file is group- or
    world-readable: highlight rather than block, as with other
-   lower-certainty risk signals (`risk-analysis.md`).
+   lower-certainty risk signals (`risk-analysis.md`). If the permissions
+   cannot be read, the warning says that instead, with the reason.
 3. **Type:** `giteaToken` is a `Secret`, not a `string`. `String()` and
    `GoString()` return `REDACTED`, so an accidental `%v`/`%+v` of
    `WorkspaceConfig` (including inside a wrapped error) cannot leak it.
