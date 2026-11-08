@@ -1,6 +1,6 @@
 # Package Details
 
-> Last updated: 2026-10-10
+> Last updated: 2026-11-06
 > Status: Active
 > Companion docs: ui-overview.md, domain.md, workflow.md, tui-dashboard-wireframe.md
 
@@ -18,7 +18,7 @@ Reached with `Enter` on a Dashboard row.
 Summary tab, for a package in the Merged state:
 
 ```text
-aur-curator          Workspace: /home/pramod/repos/aur                    ← App header
+aur-curator v1.2.0          Workspace: /home/pramod/repos/aur             ← App header
 Last Refresh: 19:07
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
 │ [1] Packages   [2] Repository   [3] Settings   [4] Help   [q] Quit                         │
@@ -178,6 +178,11 @@ Otherwise one of these lines:
 | `Build log is empty` | The build finished with an empty log |
 | `Could not load the build log: <error>` | Reading failed. Also written to the error log |
 
+The log's first line is written by aur-curator, not makepkg:
+`aur-curator: removed from build environment:` followed by the removed
+variable names, or `none` (`domain.md` § Build → Build Environment). Logs
+of builds before #473 do not have it.
+
 `End` on this tab re-reads the log and jumps to its bottom: the way to
 follow a running build. When a build completes, the screen switches to
 this tab and loads the finished log.
@@ -236,14 +241,17 @@ pacman (`workflow.md` § Installation, #351).
 Build always goes through the Build confirmation flow (`workflow.md`
 § Build Confirmation), shown as a modal over the screen.
 
-With `?` pressed, the full help replaces the compact bar (state: Merged):
+With `?` pressed, the full help replaces the compact bar (state: Merged).
+After the actions it lists the scroll keys (§ Interaction, #471), which
+the compact bar leaves out: it is not cut to the screen width.
 
 ```text
-│ ENTER        Open Review                  C            Confirm — requires Built            │
-│ ^PgDn/^PgUp  Tabs                         P            Publish — requires Confirmed        │
-│ F            Fetch                        Esc          Back                                │
-│ M            Merge — requires Approved    ?            Close help                          │
-│ B            Build                                                                         │
+│ ENTER        Open Review                   P            Publish — requires Confirmed       │
+│ ^PgDn/^PgUp  Tabs                          Esc          Back                               │
+│ F            Fetch                         ↑/↓ k/j      Scroll line                        │
+│ M            Merge — requires Approved     PgUp/PgDn    Scroll page                        │
+│ B            Build                         Home/End     Top/Bottom                         │
+│ C            Confirm — requires Built      ?            Close help                         │
 ```
 
 ### 9. Loading and Error States
@@ -260,8 +268,12 @@ field plus a warning row (§ 5).
 
 ## Interaction
 
-- `PgUp` / `PgDn` scroll the content pane; `Home` and `End` jump to its
-  top and bottom (`End` on Build Log also reloads the log).
+- `↑`/`↓` and `k`/`j` scroll the content pane one line (#471), `PgUp` /
+  `PgDn` a page; `Home` and `End` jump to its top and bottom (`End` on
+  Build Log also reloads the log). Only `PgUp`/`PgDn` reach the
+  viewport's own key handling: it would also act on `f`, `b`, `d`, `u`,
+  space, `h` and `l`, and the key of an unavailable action (`b` with
+  Build disabled) reaches the scroll handling.
 - `Esc` goes back to the previous screen. While the full help is open,
   `Esc` closes the help instead.
 - `Enter` opens the Review screen for this package.

@@ -69,8 +69,12 @@ type keyMap struct {
 	confirmKey key.Binding
 	publishKey key.Binding
 	scrollKey  key.Binding
-	topKey     key.Binding
-	bottomKey  key.Binding
+	// lineUpKey and lineDownKey scroll the content pane by one line
+	// (#471).
+	lineUpKey   key.Binding
+	lineDownKey key.Binding
+	topKey      key.Binding
+	bottomKey   key.Binding
 }
 
 // newDetailKeys creates the default key bindings for Package Details.
@@ -119,6 +123,14 @@ func newDetailKeys() keyMap {
 		scrollKey: key.NewBinding(
 			key.WithKeys("pgup", "pgdown"),
 			key.WithHelp("pgup/pgdown", "Scroll"),
+		),
+		lineUpKey: key.NewBinding(
+			key.WithKeys("up", "k"),
+			key.WithHelp("↑/k", "Scroll up"),
+		),
+		lineDownKey: key.NewBinding(
+			key.WithKeys("down", "j"),
+			key.WithHelp("↓/j", "Scroll down"),
 		),
 		topKey: key.NewBinding(
 			key.WithKeys("home"),
@@ -655,12 +667,21 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		return m, m.tabLoadCmd()
 	}
 
-	// Content-pane scrolling claims pgup/pgdown, and home/end (#344).
+	// Content-pane scrolling claims pgup/pgdown, home/end (#344) and
+	// up/k, down/j (#471). Only pgup/pgdown are forwarded to the
+	// viewport: its Update also acts on f, b, d, u, space, h and l, and an
+	// unavailable action's key (b with Build disabled) reaches this point.
 	if m.focus == detailFocusContent {
 		switch {
 		case key.Matches(keyMsg, m.keys.scrollKey):
 			cmd := m.contentPane.Update(msg)
 			return m, cmd
+		case key.Matches(keyMsg, m.keys.lineUpKey):
+			m.contentPane.LineUp()
+			return m, nil
+		case key.Matches(keyMsg, m.keys.lineDownKey):
+			m.contentPane.LineDown()
+			return m, nil
 		case key.Matches(keyMsg, m.keys.topKey):
 			m.contentPane.GotoTop()
 			return m, nil
@@ -1158,7 +1179,7 @@ func (m PackageDetailModel) actions() []widgets.Action {
 // open. Its height is measured by contentHeight via fixedPartsBelowContent.
 func (m PackageDetailModel) renderActionBar() string {
 	if m.helpOpen {
-		return "\n" + widgets.RenderActionHelp(m.actions(), max(m.width-8, 40))
+		return "\n" + widgets.RenderActionHelp(withScrollActions(m.actions()), max(m.width-8, 40))
 	}
 	return "\n" + widgets.RenderActionBar(m.actions())
 }

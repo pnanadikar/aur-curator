@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -60,9 +61,13 @@ type ReviewScreen struct {
 	analyzeKey key.Binding
 	// scrollKey scrolls the active tab's content pane.
 	scrollKey key.Binding
-	topKey    key.Binding
-	bottomKey key.Binding
-	helpKey   key.Binding
+	// lineUpKey and lineDownKey scroll the active tab's pane by one line
+	// (#471).
+	lineUpKey   key.Binding
+	lineDownKey key.Binding
+	topKey      key.Binding
+	bottomKey   key.Binding
+	helpKey     key.Binding
 
 	// helpOpen shows the full action help in place of the compact bar
 	// (tui-package-details.md § Action Bar Convention).
@@ -75,6 +80,9 @@ type ReviewScreen struct {
 	// showFindingsAfterLoad switches to the Findings tab on the next
 	// reload, after a completed analysis (#399).
 	showFindingsAfterLoad bool
+	// inconsistencyShown holds the unmapped categories whose modal has
+	// been shown since the screen was opened (#475). Reset by Refresh.
+	inconsistencyShown map[string]bool
 }
 
 // NewReviewScreen constructs the Review screen: diff rendering, the
@@ -125,6 +133,14 @@ func NewReviewScreen(pkgName domain.PackageName, gitProvider git.Provider, store
 			key.WithKeys("pgup", "pgdown"),
 			key.WithHelp("pgup/pgdown", "Scroll diff"),
 		),
+		lineUpKey: key.NewBinding(
+			key.WithKeys("up", "k"),
+			key.WithHelp("↑/k", "Scroll up"),
+		),
+		lineDownKey: key.NewBinding(
+			key.WithKeys("down", "j"),
+			key.WithHelp("↓/j", "Scroll down"),
+		),
 		topKey: key.NewBinding(
 			key.WithKeys("home"),
 			key.WithHelp("home", "Top"),
@@ -162,6 +178,9 @@ func (m ReviewScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prev := m.review
 		wasChanged := m.changed
 		m.applyLoadedReview(msg)
+		if msg.err == nil {
+			m.maybeOpenInconsistencyModal()
+		}
 		refused := m.pendingRefusal
 		showFindings := m.showFindingsAfterLoad
 		m.pendingRefusal = ""
@@ -334,8 +353,9 @@ func (m ReviewScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.runAnalyzersCmd()
 		}
-		// Only pgup/pgdown scroll the content pane; with no text field on
-		// this screen there is nothing else for a key to collide with.
+		// Only pgup/pgdown are forwarded to the viewport: its Update also
+		// acts on f, b, d, u, space, h and l. The line keys call the pane
+		// directly for the same reason (#471).
 		if key.Matches(keyMsg, m.scrollKey) {
 			switch m.tabs.Active().Label {
 			case "Findings":
@@ -343,6 +363,20 @@ func (m ReviewScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				return m, m.diffPane.Update(msg)
 			}
+		}
+		if key.Matches(keyMsg, m.lineUpKey) || key.Matches(keyMsg, m.lineDownKey) {
+			up := key.Matches(keyMsg, m.lineUpKey)
+			switch {
+			case m.tabs.Active().Label == "Findings" && up:
+				m.findingsPane.LineUp()
+			case m.tabs.Active().Label == "Findings":
+				m.findingsPane.LineDown()
+			case up:
+				m.diffPane.LineUp()
+			default:
+				m.diffPane.LineDown()
+			}
+			return m, nil
 		}
 		// Home/End jump to the top/bottom of the active tab's pane (#344).
 		if key.Matches(keyMsg, m.topKey) || key.Matches(keyMsg, m.bottomKey) {
@@ -375,6 +409,7 @@ func (m ReviewScreen) Package() domain.PackageName {
 // round trip between Package Details and Review for the same package.
 func (m ReviewScreen) Refresh() ReviewScreen {
 	m.opFailure = nil
+	m.inconsistencyShown = nil
 	m.syncLayout()
 	return m
 }
@@ -481,7 +516,7 @@ func (m ReviewScreen) actions() []widgets.Action {
 func (m ReviewScreen) renderActionBar() string {
 	bar := widgets.RenderActionBar(m.actions())
 	if m.helpOpen {
-		bar = widgets.RenderActionHelp(m.actions(), max(m.width-8, 40))
+		bar = widgets.RenderActionHelp(withScrollActions(m.actions()), max(m.width-8, 40))
 	}
 	if m.loading {
 		sep := "  "
@@ -502,6 +537,25 @@ func (m ReviewScreen) renderTabContent() string {
 	}
 }
 
+// findingsScopeNote is the Findings tab's fixed first line once the
+// analyzers have run (#474, #484): findings point into the diff, they are
+// not a verdict on it. Help § Review findings says what each analyzer
+// reads.
+const findingsScopeNote = "Findings point at changes; they are not a verdict. The diff is the review."
+
+// findingsLocationIndent indents a finding's Location line after the
+// number column (#471).
+const findingsLocationIndent = "       "
+
+// expandTabs replaces each tab with four spaces, as lipgloss does for
+// diff lines. A Shell finding's summary holds the PKGBUILD line as
+// written; the width functions count a tab as one column while the
+// terminal draws up to eight, so a tab would cut the line at the wrong
+// place (#471).
+func expandTabs(s string) string {
+	return strings.ReplaceAll(s, "\t", "    ")
+}
+
 func (m ReviewScreen) renderFindingsContent() string {
 	p := m.engine.Policy()
 
@@ -512,8 +566,13 @@ func (m ReviewScreen) renderFindingsContent() string {
 		return theme.SubtleStyle().Render("No findings yet. Press a to run analyzers.")
 	}
 
+	note := theme.DimmedStyle().Render(findingsScopeNote)
+	if cats := unmappedCategories(p, m.review.Findings); len(cats) > 0 {
+		note = theme.ErrorStyle().Render(strings.Join(inconsistencyLines(cats), "\n")) + "\n\n" + note
+	}
+
 	if len(m.review.Findings) == 0 {
-		return theme.SubtleStyle().Render("No findings — all checks passed.")
+		return note + "\n\n" + theme.SubtleStyle().Render("No findings.")
 	}
 
 	sorted := sortedFindings(p, m.review.Findings)
@@ -530,7 +589,8 @@ func (m ReviewScreen) renderFindingsContent() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("\n")
+	b.WriteString(note)
+	b.WriteString("\n\n")
 	b.WriteString(
 		theme.HeaderStyle().Render(fmt.Sprintf(
 			"Findings: %d (%s)\n",
@@ -539,7 +599,13 @@ func (m ReviewScreen) renderFindingsContent() string {
 		)),
 	)
 	b.WriteString("\n")
-	for _, f := range sorted {
+	// Each finding is numbered i/N, the number right-aligned to the width
+	// of N, so a list longer than the pane shows that more follow without
+	// an extra line (#471). The Location keeps its indent after the
+	// number column.
+	digits := len(strconv.Itoa(len(sorted)))
+	indent := strings.Repeat(" ", 2*digits+2) + findingsLocationIndent
+	for i, f := range sorted {
 		var severityStr string
 		var severityStyle lipgloss.Style
 		switch p.Severity(f.Category) {
@@ -553,13 +619,14 @@ func (m ReviewScreen) renderFindingsContent() string {
 			severityStr = "LOW"
 			severityStyle = theme.SubtleStyle().Foreground(lipgloss.Color("112"))
 		}
-		fmt.Fprintf(&b, "[%s] %s: %s\n",
+		fmt.Fprintf(&b, "%*d/%d [%s] %s: %s\n",
+			digits, i+1, len(sorted),
 			severityStyle.Render(severityStr),
 			theme.SubtleStyle().Render(f.Analyzer),
-			f.Summary,
+			expandTabs(f.Summary),
 		)
 		if f.Location != "" {
-			fmt.Fprintf(&b, "       %s\n", theme.DimmedStyle().Render(f.Location))
+			fmt.Fprintf(&b, "%s%s\n", indent, theme.DimmedStyle().Render(f.Location))
 		}
 	}
 	return b.String()

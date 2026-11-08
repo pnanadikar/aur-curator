@@ -1,6 +1,6 @@
 # Developer Guide: aur-curator
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-06
 > Status: Active
 > Companion docs: `architecture.md`, `interfaces.md`, `domain.md`,
 > `workflow.md`, `ui-overview.md`; repository root `DEVELOPMENT.md`
@@ -72,7 +72,7 @@ running aur-curator per workspace.
 | `Catalog` | the catalog from `main.go` | interface `catalog.PackageCatalog` |
 | `ReviewDB`, `BuildDB`, `ArtifactDB` | JSON stores under `<rootPath>/.aur-curator/` | interfaces declared in `internal/domain` |
 | `Analyzers` | `analyzer.New()` | no analyzer settings |
-| `Policy` | `policy.NewEngine(domain.PolicyConfig{})` | no user overrides are loaded yet |
+| `Policy` | `policy.NewEngine(domain.PolicyConfig{}, policy.WithUnmappedHook(…))` | no user overrides are loaded yet; the hook writes an unmapped finding category to the error log (#475) |
 | `Reviews` | `*review.Engine` | concrete type |
 | `Builder` | `build.MakepkgBuilder{}` | always makepkg: `config.Load` accepts no other `builderBackend` (#408) |
 | `BuildEngine` | `*build.Engine` (builder, build and artifact stores, Git, paths) | concrete type; screens reach the stores through it too |

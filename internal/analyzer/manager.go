@@ -35,6 +35,8 @@ func New() Manager {
 			&urlAnalyzer{},
 			&checksumAnalyzer{},
 			&shellAnalyzer{},
+			&dependsAnalyzer{},
+			&pkgbuildAnalyzer{},
 		},
 	}
 }

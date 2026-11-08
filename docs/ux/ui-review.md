@@ -104,6 +104,8 @@ Handled in this order:
 | `Enter` | `Status == Pending` | open the Approve modal |
 | `Ctrl+X` | `Status == Pending` | open the Reject confirm modal |
 | `PgUp`, `PgDn` | always | scroll the active tab's pane |
+| `↑`, `k` / `↓`, `j` | always | scroll the active tab's pane one line (#471) |
+| `Home` / `End` | always | top / bottom of the active tab's pane (#344) |
 
 `Tab`/`Shift+Tab` are reserved for focus-cycling and are deliberately
 unbound here — never use them to switch tabs (`developer-guide.md`

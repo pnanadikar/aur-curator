@@ -4,30 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pramod/aur-curator/internal/domain"
 	"github.com/pramod/aur-curator/internal/git"
 )
-
-func runChecksum(t *testing.T, patch string) []domain.Finding {
-	t.Helper()
-
-	a := &checksumAnalyzer{}
-
-	findings, err := a.Run(context.Background(), &git.GitDiff{
-		Files: []git.FileDiff{
-			{
-				Path:  "PKGBUILD",
-				Kind:  git.FileKindPKGBUILD,
-				Patch: patch,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return findings
-}
 
 func TestChecksumAnalyzer_NoPKGBUILD(t *testing.T) {
 	a := &checksumAnalyzer{}
@@ -42,10 +20,7 @@ func TestChecksumAnalyzer_NoPKGBUILD(t *testing.T) {
 }
 
 func TestVersionBumpPkgver(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--pkgver=1.0
-+pkgver=2.0
-`)
+	findings := runChecksumFiles(t, "pkgver=1.0", "pkgver=2.0")
 
 	if countCategory(findings, "version_bump") != 1 {
 		t.Fatal(findings)
@@ -53,10 +28,7 @@ func TestVersionBumpPkgver(t *testing.T) {
 }
 
 func TestVersionBumpPkgrel(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--pkgrel=1
-+pkgrel=2
-`)
+	findings := runChecksumFiles(t, "pkgrel=1", "pkgrel=2")
 
 	if countCategory(findings, "version_bump") != 1 {
 		t.Fatal(findings)
@@ -64,12 +36,7 @@ func TestVersionBumpPkgrel(t *testing.T) {
 }
 
 func TestVersionBumpBothStillOneFinding(t *testing.T) {
-	findings := runChecksum(t, `@@ -1,2 +1,2 @@
--pkgver=1
-+pkgver=2
--pkgrel=1
-+pkgrel=2
-`)
+	findings := runChecksumFiles(t, "pkgver=1\npkgrel=1", "pkgver=2\npkgrel=2")
 
 	if countCategory(findings, "version_bump") != 1 {
 		t.Fatal(findings)
@@ -85,24 +52,18 @@ func TestVersionBumpBothStillOneFinding(t *testing.T) {
 // Limitations ("PGP key rotation... is not flagged by any current
 // category — only full removal is").
 func TestPGPRemoved(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--validpgpkeys=('AAAAAAAAAAAAAAAA' 'BBBBBBBBBBBBBBBB')
-+validpgpkeys=()
-`)
+	findings := runChecksumFiles(t, "validpgpkeys=('AAAAAAAAAAAAAAAA' 'BBBBBBBBBBBBBBBB')", "validpgpkeys=()")
 
 	if countCategory(findings, "pgp_removed") != 1 {
 		t.Fatal(findings)
 	}
 }
 
-// TestPGPKeyRotationNotFlagged confirms the deliberate non-coverage: one
-// of two keys dropped, one remains — verification still succeeds, so
-// this must NOT produce a pgp_removed finding.
+// TestPGPKeyRotationNotFlagged: one of two keys dropped, one remains —
+// verification still succeeds, so this must NOT produce a pgp_removed
+// finding. (A key that is replaced or added is pgp_key_changed, #476.)
 func TestPGPKeyRotationNotFlagged(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--validpgpkeys=('AAAAAAAAAAAAAAAA' 'BBBBBBBBBBBBBBBB')
-+validpgpkeys=('AAAAAAAAAAAAAAAA')
-`)
+	findings := runChecksumFiles(t, "validpgpkeys=('AAAAAAAAAAAAAAAA' 'BBBBBBBBBBBBBBBB')", "validpgpkeys=('AAAAAAAAAAAAAAAA')")
 
 	if countCategory(findings, "pgp_removed") != 0 {
 		t.Fatal(findings)
@@ -110,10 +71,7 @@ func TestPGPKeyRotationNotFlagged(t *testing.T) {
 }
 
 func TestChecksumRemovedSkip(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-+sha256sums=('SKIP')
-`)
+	findings := runChecksumFiles(t, "sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')", "sha256sums=('SKIP')")
 
 	if countCategory(findings, "checksum_removed") != 1 {
 		t.Fatal(findings)
@@ -121,10 +79,7 @@ func TestChecksumRemovedSkip(t *testing.T) {
 }
 
 func TestChecksumRemovedEmpty(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-+sha256sums=('')
-`)
+	findings := runChecksumFiles(t, "sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')", "sha256sums=('')")
 
 	if countCategory(findings, "checksum_removed") != 1 {
 		t.Fatal(findings)
@@ -132,10 +87,7 @@ func TestChecksumRemovedEmpty(t *testing.T) {
 }
 
 func TestChecksumRefresh(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-+sha256sums=('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-`)
+	findings := runChecksumFiles(t, "sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')", "sha256sums=('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')")
 
 	if countCategory(findings, "checksum_refresh") != 1 {
 		t.Fatal(findings)
@@ -143,10 +95,7 @@ func TestChecksumRefresh(t *testing.T) {
 }
 
 func TestChecksumUnchanged(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-+sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-`)
+	findings := runChecksumFiles(t, "sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')", "sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')")
 
 	if len(findings) != 0 {
 		t.Fatal(findings)
@@ -154,10 +103,7 @@ func TestChecksumUnchanged(t *testing.T) {
 }
 
 func TestArchSpecificChecksumArray(t *testing.T) {
-	findings := runChecksum(t, `@@ -1 +1 @@
--sha256sums_x86_64=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-+sha256sums_x86_64=('SKIP')
-`)
+	findings := runChecksumFiles(t, "sha256sums_x86_64=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')", "sha256sums_x86_64=('SKIP')")
 
 	if countCategory(findings, "checksum_removed") != 1 {
 		t.Fatal(findings)

@@ -20,6 +20,8 @@ const (
 	ModalKindText
 	// ModalKindConfirmText displays a single-line text entry that submits on Enter.
 	ModalKindConfirmText
+	// ModalKindNotice displays information only; Enter or Esc dismisses it.
+	ModalKindNotice
 )
 
 // ModalResult reports the user's action from a modal update.
@@ -81,6 +83,16 @@ func NewConfirmTextModal(lines []string, prompt string) ConfirmModal {
 	}
 }
 
+// NewNoticeModal constructs an information-only modal from one or more
+// text lines. Enter reports Confirmed and Esc reports Cancelled; either
+// means dismissed.
+func NewNoticeModal(lines ...string) ConfirmModal {
+	return ConfirmModal{
+		kind:  ModalKindNotice,
+		lines: append([]string(nil), lines...),
+	}
+}
+
 // SetWidth updates the target width for centering the modal.
 func (m *ConfirmModal) SetWidth(width int) {
 	m.width = width
@@ -110,9 +122,21 @@ func (m *ConfirmModal) Update(msg tea.Msg) (ModalResult, tea.Cmd) {
 		return m.updateText(keyMsg)
 	case ModalKindConfirmText:
 		return m.updateConfirmText(keyMsg)
+	case ModalKindNotice:
+		return m.updateNotice(keyMsg)
 	default:
 		return ModalResult{}, nil
 	}
+}
+
+func (m *ConfirmModal) updateNotice(msg tea.KeyMsg) (ModalResult, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		return ModalResult{Confirmed: true}, nil
+	case "esc":
+		return ModalResult{Cancelled: true}, nil
+	}
+	return ModalResult{}, nil
 }
 
 // View renders the modal content inside a centered overlay block.
@@ -131,6 +155,9 @@ func (m ConfirmModal) View() string {
 		lines = append(lines, m.prompt)
 		lines = append(lines, theme.InputStyle().Render(m.input.View()))
 		lines = append(lines, m.confirmTextHint())
+	case ModalKindNotice:
+		lines = append(lines, m.lines...)
+		lines = append(lines, "", theme.SubtleStyle().Render("[Enter/Esc] Dismiss"))
 	default:
 		lines = append(lines, m.prompt)
 	}

@@ -68,10 +68,18 @@ func (k FileKind) String() string {
 // For example, the Diff tab (tui-review.md) is populated by filtering
 // Files for Kind == FileKindPKGBUILD or FileKindOther and rendering each
 // as its own FileDiff, not merging them into a single blob.
+//
+// Old and New are the file's whole text at the range's base and upstream
+// commits, "" where the file does not exist (Import, added, deleted).
+// ReviewDiff fills them for FileKindPKGBUILD only and sets ContentLoaded;
+// the analyzers read arrays from them rather than from Patch
+// (analyzer-specs.md § PKGBUILD Parsing, #484).
 type FileDiff struct {
-	Path  string
-	Kind  FileKind
-	Patch string
+	Path          string
+	Kind          FileKind
+	Patch         string
+	Old, New      string
+	ContentLoaded bool
 }
 
 // GitDiff is a range of upstream changes for one package: its commits and

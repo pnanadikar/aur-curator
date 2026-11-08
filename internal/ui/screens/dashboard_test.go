@@ -469,12 +469,12 @@ func TestHighestSeverityForFindingsUnknownCategory(t *testing.T) {
 		},
 	}
 
-	// Unknown categories fall back to SeverityLow
+	// An unmapped category is an internal inconsistency, ranked High (#475)
 	got := m.highestSeverityForFindings([]domain.Finding{
 		{Category: "unknown_cat", Summary: "unknown"},
 	})
 
-	want := "LOW"
+	want := "HIGH"
 	if got != want {
 		t.Errorf("highestSeverityForFindings(unknown) = %q, want %q", got, want)
 	}

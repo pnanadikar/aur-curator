@@ -31,13 +31,24 @@ func (MakepkgBuilder) Build(ctx context.Context, workspaceDir string, logPath st
 		return BuildResult{}, fmt.Errorf("create log file: %w", err)
 	}
 
+	// makepkg gets the user's environment minus the denylist (#473); the
+	// log's first line names what was removed, never the values.
+	env, removed := cleanEnv(os.Environ())
+	if _, err := fmt.Fprintln(logFile, envLogLine(removed)); err != nil {
+		if closeErr := logFile.Close(); closeErr != nil {
+			return BuildResult{}, fmt.Errorf("close log file: %w", closeErr)
+		}
+		return BuildResult{}, fmt.Errorf("write log file: %w", err)
+	}
+
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "makepkg", "--noconfirm", "--nocolor")
 	cmd.Dir = workspaceDir
+	cmd.Env = env
 	cmd.Stdout = logFile
 	cmd.Stderr = io.MultiWriter(logFile, &stderr)
 
-	trace.Log(ctx, "handoff", "to", "subprocess", "from", "builder", "cmd", "makepkg")
+	trace.Log(ctx, "handoff", "to", "subprocess", "from", "builder", "cmd", "makepkg", "envRemoved", strings.Join(removed, ","))
 	if err := procgroup.Run(ctx, cmd, "to", "subprocess", "from", "builder", "cmd", "makepkg"); err != nil {
 		if closeErr := logFile.Close(); closeErr != nil {
 			return BuildResult{}, fmt.Errorf("close log file: %w", closeErr)

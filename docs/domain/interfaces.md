@@ -1,6 +1,6 @@
 # Interfaces
 
-> Last updated: 2026-10-22
+> Last updated: 2026-11-06
 > Status: Active
 > Companion docs: domain.md, architecture.md
 > This document defines the major architectural interfaces within aur-curator.
@@ -263,6 +263,7 @@ Current analyzers (rules in `analyzer-specs.md`):
 - URL analyzer — `url_analyzer.go`
 - Checksum analyzer — `checksum_analyzer.go`
 - Shell analyzer — `shell_analyzer.go`
+- Depends analyzer — `depends_analyzer.go` (#476)
 
 Possible future analyzers:
 
@@ -287,7 +288,11 @@ Convert findings into meaningful risk assessments.
 #### Responsibilities
 
 - classify findings
-- determine severity
+- determine severity; an unmapped category is ranked High and reported
+  as an internal inconsistency (`risk-analysis.md` § Unmapped
+  categories)
+- say whether a category is mapped (`Mapped`), for the Review screen's
+  message
 - apply user policy (overrides from `PolicyConfig`; none are persisted
   yet, so only the default mapping applies — `domain.md` § PolicyConfig)
 - group related findings (Not in scope (#19): findings are counted by

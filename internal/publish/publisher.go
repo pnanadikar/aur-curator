@@ -186,13 +186,17 @@ type repoFiles struct {
 // file at dst is first renamed to dst+backupSuffix. The new content is
 // copied to a temporary file in the same directory and renamed into place,
 // so dst never holds a partial copy.
+//
+// Every package file in the repository ends up repoFileMode, including
+// one left in place because its content is unchanged, so publishing again
+// repairs a file published 0600 before #480.
 func (r *repoFiles) place(src, dst string) error {
 	same, err := sameFileContent(src, dst)
 	if err != nil {
 		return err
 	}
 	if same {
-		return nil
+		return ensureMode(dst)
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".aur-curator-publish-*")
@@ -207,6 +211,12 @@ func (r *repoFiles) place(src, dst string) error {
 	if err := copyFile(src, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
+	}
+	// os.CreateTemp creates the file 0600, and copyFile's write keeps an
+	// existing file's mode; the rename below keeps it too (#480).
+	if err := os.Chmod(tmpPath, repoFileMode); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod %s: %w", tmpPath, err)
 	}
 
 	pl := placement{dst: dst}
@@ -334,6 +344,25 @@ func sameFileContent(src, dst string) (bool, error) {
 			return doneA && doneB, nil
 		}
 	}
+}
+
+// repoFileMode is the mode of package files in the repository: readable
+// by anyone, like the database files repo-add writes (#480).
+const repoFileMode os.FileMode = 0o644
+
+// ensureMode sets path to repoFileMode if it has another mode.
+func ensureMode(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Mode().Perm() == repoFileMode {
+		return nil
+	}
+	if err := os.Chmod(path, repoFileMode); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
 }
 
 // copyFile copies the file at src to dst. Both paths must be in the same

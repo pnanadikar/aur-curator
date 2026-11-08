@@ -675,12 +675,12 @@ func TestApproveWithFindingsShowsModal(t *testing.T) {
 	model.review.Findings = []domain.Finding{
 		{
 			Analyzer: "checksum",
-			Category: "checksumMismatch",
+			Category: "checksum_refresh",
 			Summary:  "sha256sum mismatch",
 		},
 		{
-			Analyzer: "shell",
-			Category: "dangerousCommand",
+			Analyzer: "checksum",
+			Category: "version_bump",
 			Summary:  "eval detected",
 		},
 	}
@@ -789,7 +789,7 @@ func TestApproveWithFindingsCancelReturnsToReview(t *testing.T) {
 
 	model.review.FindingsStatus = domain.FindingsRun
 	model.review.Findings = []domain.Finding{
-		{Analyzer: "checksum", Category: "checksumMismatch", Summary: "sha256sum mismatch"},
+		{Analyzer: "checksum", Category: "checksum_refresh", Summary: "sha256sum mismatch"},
 	}
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -823,7 +823,7 @@ func TestApproveWithFindingsConfirmSavesReview(t *testing.T) {
 	model.review.FindingsStatus = domain.FindingsRun
 	store.review.FindingsStatus = domain.FindingsRun
 	model.review.Findings = []domain.Finding{
-		{Analyzer: "checksum", Category: "checksumMismatch", Summary: "sha256sum mismatch"},
+		{Analyzer: "checksum", Category: "checksum_refresh", Summary: "sha256sum mismatch"},
 	}
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1155,6 +1155,9 @@ func TestReviewScreenRenderFindingsContentNotRun(t *testing.T) {
 	if !strings.Contains(view, "No findings yet") {
 		t.Fatal("renderFindingsContent should show 'no findings yet' message when not run")
 	}
+	if strings.Contains(view, findingsScopeNote) {
+		t.Fatal("the scope note is shown only once the analyzers have run (#474)")
+	}
 }
 
 func TestReviewScreenRenderFindingsContentEmpty(t *testing.T) {
@@ -1184,8 +1187,14 @@ func TestReviewScreenRenderFindingsContentEmpty(t *testing.T) {
 	model = updated.(ReviewScreen)
 
 	view := model.View()
-	if !strings.Contains(view, "No findings — all checks passed") {
-		t.Fatal("renderFindingsContent should show 'all checks passed' when findings list is empty")
+	if !strings.Contains(view, "No findings.") {
+		t.Fatal("renderFindingsContent should show 'No findings.' when findings list is empty")
+	}
+	if strings.Contains(view, "all checks passed") {
+		t.Fatal("'all checks passed' overclaims next to the scope note (#474)")
+	}
+	if !strings.Contains(view, findingsScopeNote) {
+		t.Fatal("the scope note should be shown with 0 findings (#474)")
 	}
 }
 
@@ -1227,6 +1236,9 @@ func TestReviewScreenRenderFindingsContentWithFindings(t *testing.T) {
 	}
 	if !strings.Contains(view, "Unsafe shell exec") {
 		t.Fatal("renderFindingsContent should render individual findings")
+	}
+	if !strings.Contains(view, findingsScopeNote) {
+		t.Fatal("the scope note should be shown with N findings (#474)")
 	}
 }
 

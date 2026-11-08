@@ -70,6 +70,12 @@ func (d *DiffPane) Update(msg tea.Msg) tea.Cmd {
 // GotoTop scrolls to the first line (Home, #344).
 func (d *DiffPane) GotoTop() { d.viewport.GotoTop() }
 
+// LineUp scrolls up one line (Up, k: #471).
+func (d *DiffPane) LineUp() { d.viewport.ScrollUp(1) }
+
+// LineDown scrolls down one line (Down, j: #471).
+func (d *DiffPane) LineDown() { d.viewport.ScrollDown(1) }
+
 // GotoBottom scrolls to the last line (End, #344).
 func (d *DiffPane) GotoBottom() { d.viewport.GotoBottom() }
 

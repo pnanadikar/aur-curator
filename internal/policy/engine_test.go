@@ -18,7 +18,7 @@ func TestSeverity_Default(t *testing.T) {
 		"network_download": domain.SeverityHigh,
 		"checksum_refresh": domain.SeverityLow,
 		"version_bump":     domain.SeverityLow,
-		"some_future_category_nobody_has_classified_yet": domain.SeverityLow,
+		"some_future_category_nobody_has_classified_yet": domain.SeverityHigh, // #475
 	}
 
 	for category, want := range cases {

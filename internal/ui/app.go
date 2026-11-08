@@ -22,6 +22,7 @@ import (
 	"github.com/pramod/aur-curator/internal/trace"
 	"github.com/pramod/aur-curator/internal/ui/msgs"
 	"github.com/pramod/aur-curator/internal/ui/screens"
+	"github.com/pramod/aur-curator/internal/version"
 	"github.com/pramod/aur-curator/internal/widgets"
 )
 
@@ -566,7 +567,8 @@ func (a App) viewHeader() string {
 	workspace := a.deps.Config.RootPath
 	refresh := a.lastRefresh.Format("15:04")
 
-	title := theme.HeaderStyle().Render("aur-curator")
+	// The running version, dimmed: the same value --version prints (#481).
+	title := theme.HeaderStyle().Render("aur-curator") + " " + theme.DimmedStyle().Render(version.Version)
 	ws := theme.SubtleStyle().Render("Workspace: " + workspace)
 	refreshLine := theme.SubtleStyle().Render("Last Refresh: " + refresh)
 

@@ -39,7 +39,8 @@ published, you install and upgrade it with plain pacman.
   patches, compared against the last commit you reviewed.
 - Analyzers that flag risky changes (new download URLs, removed checksum
   or PGP verification, shell execution) as findings. Findings are
-  highlighted, never blocking: you decide.
+  highlighted, never blocking: you decide. Help (§ Review findings) says
+  what each analyzer reads and what it cannot see.
 - A personal Gitea repository per package, so your reviewed history is an
   audit trail independent of the AUR.
 - Local builds with `makepkg`, an explicit Confirm step, then publishing

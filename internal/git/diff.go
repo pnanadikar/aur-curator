@@ -119,7 +119,8 @@ func (p *provider) mergeBase(ctx context.Context, repo, a, b string) (string, er
 // an error naming it; ReviewDiff never falls back to the live comparison,
 // which would show something other than what was reviewed. The returned
 // GitDiff has LocalCommit empty; BaseCommit and UpstreamCommit are the
-// verified full hashes.
+// verified full hashes. Each PKGBUILD entry of Files also carries the
+// file's whole text at both commits (FileDiff.Old/New, #484).
 func (p *provider) ReviewDiff(ctx context.Context, packageName domain.PackageName, base, upstream string) (*GitDiff, error) {
 	if upstream == "" {
 		return nil, fmt.Errorf("review %q: no reviewed upstream commit", packageName)
@@ -158,12 +159,68 @@ func (p *provider) ReviewDiff(ctx context.Context, packageName domain.PackageNam
 		return nil, fmt.Errorf("files %q: %w", packageName, err)
 	}
 
+	files := parseFileDiffs(patch)
+	if err := p.loadContents(ctx, repo, files, baseFull, upFull); err != nil {
+		return nil, fmt.Errorf("files %q: %w", packageName, err)
+	}
+
 	return &GitDiff{
 		BaseCommit:     baseFull,
 		UpstreamCommit: upFull,
 		Commits:        commits,
-		Files:          parseFileDiffs(patch),
+		Files:          files,
 	}, nil
+}
+
+// loadContents fills Old and New of every PKGBUILD entry of files with
+// its whole text at base and upstream, and sets ContentLoaded. An empty
+// base (Import) leaves Old empty. The analyzers compare arrays of the two
+// files (analyzer-specs.md § PKGBUILD Parsing, #484).
+func (p *provider) loadContents(ctx context.Context, repo string, files []FileDiff, base, upstream string) error {
+	for i := range files {
+		f := &files[i]
+		if f.Kind != FileKindPKGBUILD {
+			continue
+		}
+		old, err := p.fileAt(ctx, repo, base, f.Path)
+		if err != nil {
+			return err
+		}
+		newText, err := p.fileAt(ctx, repo, upstream, f.Path)
+		if err != nil {
+			return err
+		}
+		f.Old, f.New, f.ContentLoaded = old, newText, true
+	}
+	return nil
+}
+
+// fileAt returns the text of path at commit, or "" when the commit is ""
+// or has no such file. `ls-tree` says whether the file is there without
+// failing when it is not, so a missing file and a git error stay apart.
+func (p *provider) fileAt(ctx context.Context, repo, commit, path string) (string, error) {
+	if commit == "" {
+		return "", nil
+	}
+	out, err := p.runner.Run(ctx, repo, "ls-tree", commit, "--", path)
+	if err != nil {
+		return "", fmt.Errorf("look up %s at %s: %w", path, commit, err)
+	}
+	entry := strings.TrimSpace(out)
+	if entry == "" {
+		return "", nil
+	}
+	// "<mode> <type> <hash>\t<path>"
+	meta, _, _ := strings.Cut(entry, "\t")
+	fields := strings.Fields(meta)
+	if len(fields) != 3 || fields[1] != "blob" {
+		return "", fmt.Errorf("look up %s at %s: not a file: %q", path, commit, entry)
+	}
+	text, err := p.runner.Run(ctx, repo, "cat-file", "blob", fields[2])
+	if err != nil {
+		return "", fmt.Errorf("read %s at %s: %w", path, commit, err)
+	}
+	return text, nil
 }
 
 // verifyCommit resolves rev to a full commit hash, or fails if the

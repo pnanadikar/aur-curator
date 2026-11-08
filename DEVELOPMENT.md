@@ -57,6 +57,67 @@ and `<pkg>` with a package name. Each one says how to undo it.
 Always run `./bin/aur-curator` from the repository after `make build`, not
 the copy on your `PATH`, which is the last one installed.
 
+#### A test workspace
+
+For testing that needs packages in particular states, or a comparison
+of the released build with the new one, use a second workspace that has
+nothing to do with the one you use. **Never wipe your real workspace to
+get test data:** its `repositoryPath` is the repository pacman installs
+from, and its Gitea org holds your reviewed repositories.
+
+A copy of your config with its own:
+
+- `rootPath`, e.g. `~/aur-test`;
+- `repositoryPath`, e.g. `~/aur-test-repo`, which is not in
+  `pacman.conf`;
+- `giteaOrg`, e.g. `aur-test`, created in Gitea first, so the test
+  repositories never mix with your real ones.
+
+**One package per state.** Import each package
+(`./bin/aur-curator <test-config> import <pkg>`), then take it as far as
+its row says in the TUI. Packages that build quickly keep this short.
+
+| State | How |
+| --- | --- |
+| Review Pending | Import only |
+| Rejected | Reject the review |
+| Approved | Approve; do not merge |
+| Merged | Approve, Merge |
+| Built | … Build |
+| Confirmed | … Confirm |
+| Published | … Publish |
+
+On top of those, as needed: a stale package (§ A stale package), local
+commits (§ Local commits, on the Merged one), and failed reads (§ Failed
+reads).
+
+**Comparing two builds.** The released build is the one `make release`
+installed (`aur-curator` on your `PATH`); the new one is `./bin/aur-curator`
+(§ Run the new build). Both read and write the same workspace, one at a
+time (the workspace lock). Look at a state with both before taking an
+action, since an action changes the state for both. This works as long as
+the change does not alter the on-disk format.
+
+Undo: empty the test `rootPath` and `repositoryPath`, delete the
+repositories in the test Gitea org, then import again. Only ever do this
+with the test config.
+
+#### Failed reads
+
+To see how a failed merge check is reported (#462), on an Approved
+package that is not merged:
+
+- **An unknown reviewed commit:** back up
+  `<ws>/.aur-curator/packages/<pkg>/review.json`, then set its
+  `upstreamCommit` to `0000000000000000000000000000000000000001`. The
+  Dashboard logs `[state] read merge state of "<pkg>"` in `errors.log`,
+  and Package Details shows "Could not check merge state". `update` and
+  `outdated` fail earlier, on the version read at that commit.
+  Undo: copy the backup back.
+- **No `master`:** `git -C <ws>/<pkg> branch -m master master-test`. Now
+  `outdated` names the failed merge check and exits 1.
+  Undo: `git -C <ws>/<pkg> branch -m master-test master`.
+
 #### A stale package
 
 To make the AUR check see a package as stale, point its review at an
@@ -208,6 +269,10 @@ The ones that most often decide how code should be written:
   configuration. Everything else is derived on read.
 - **Lifecycle state is derived**, never stored.
 - **`internal/domain` holds structs only.** Logic goes in its own package.
+- **A released finding category is stored format.** Findings are saved
+  with their category, so removing or renaming a category that has been
+  in a release needs a migration that remaps stored findings
+  (`docs/domain/risk-analysis.md` § Unmapped categories).
 
 [`docs/app-contract/developer-guide.md`](docs/app-contract/developer-guide.md)
 § Implementation Conventions & Gotchas lists the Bubble Tea rules that
@@ -222,9 +287,10 @@ expected to match them, not the other way round.
 [`docs/README.md`](docs/README.md) explains how they are organized and
 which ones are canonical.
 
-When a change alters documented behaviour, update the docs first, on
-`main`, before the code branch is cut. Each change to a canonical doc is
-reconciled across every other doc it affects.
+When a change alters documented behaviour, update the docs first: the
+first commit on the issue branch, reviewed before any code, merged to
+`main` together with the code so `main` stays releasable. Each change to
+a canonical doc is reconciled across every other doc it affects.
 
 ## Git workflow
 

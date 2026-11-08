@@ -134,6 +134,8 @@ func (f *fakePolicyEngine) Severity(string) domain.Severity {
 	return domain.SeverityLow
 }
 
+func (f *fakePolicyEngine) Mapped(string) bool { return true }
+
 func (f *fakePolicyEngine) Assess(findings []domain.Finding) *domain.RiskAssessment {
 	f.calls++
 	if f.assessment != nil {

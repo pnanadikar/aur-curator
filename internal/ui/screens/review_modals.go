@@ -1,9 +1,13 @@
 package screens
 
 import (
+	"fmt"
+	"sort"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/pramod/aur-curator/internal/domain"
+	"github.com/pramod/aur-curator/internal/policy"
 	"github.com/pramod/aur-curator/internal/trace"
 	"github.com/pramod/aur-curator/internal/widgets"
 )
@@ -19,6 +23,7 @@ const (
 	modalApprove
 	modalRejectConfirm
 	modalRejectReason
+	modalInconsistency
 )
 
 func (m *ReviewScreen) openApproveModal() {
@@ -77,6 +82,9 @@ func (m *ReviewScreen) handleModalConfirmed(value string) tea.Cmd {
 	case modalRejectConfirm:
 		trace.Log(m.traceCtx, "handoff", "to", "reject_reason_modal", "pkg", m.pkgName)
 		return m.openRejectReasonModal()
+	case modalInconsistency:
+		m.closeModal()
+		return nil
 	default:
 		m.closeModal()
 		return nil
@@ -120,4 +128,59 @@ func (m *ReviewScreen) handleModalSkipped() tea.Cmd {
 func (m *ReviewScreen) closeModal() {
 	m.modal = nil
 	m.modalFlow = modalNone
+}
+
+// unmappedCategories returns, sorted and once each, the categories of
+// findings that have no severity mapping (#475).
+func unmappedCategories(p policy.Engine, findings []domain.Finding) []string {
+	seen := map[string]bool{}
+	var cats []string
+	for _, f := range findings {
+		if !seen[f.Category] && !p.Mapped(f.Category) {
+			seen[f.Category] = true
+			cats = append(cats, f.Category)
+		}
+	}
+	sort.Strings(cats)
+	return cats
+}
+
+// inconsistencyLines is the user-facing text for unmapped categories,
+// shown in the modal and at the top of the Findings tab
+// (tui-review.md § Internal Inconsistency).
+func inconsistencyLines(cats []string) []string {
+	var lines []string
+	for _, c := range cats {
+		lines = append(lines,
+			fmt.Sprintf("Internal inconsistency: finding category %q has no severity (ranked HIGH).", c),
+			"Please file a bug report with this line, the package name and aur-curator's version.",
+		)
+	}
+	return lines
+}
+
+// maybeOpenInconsistencyModal shows the internal-inconsistency modal for
+// unmapped categories not yet shown since the screen was opened, unless
+// another modal is open (#475).
+func (m *ReviewScreen) maybeOpenInconsistencyModal() {
+	if m.modal != nil || m.review == nil {
+		return
+	}
+	if m.inconsistencyShown == nil {
+		m.inconsistencyShown = map[string]bool{}
+	}
+	var fresh []string
+	for _, c := range unmappedCategories(m.engine.Policy(), m.review.Findings) {
+		if !m.inconsistencyShown[c] {
+			m.inconsistencyShown[c] = true
+			fresh = append(fresh, c)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	modal := widgets.NewNoticeModal(inconsistencyLines(fresh)...)
+	modal.SetWidth(max(m.width-8, 48))
+	m.modal = &modal
+	m.modalFlow = modalInconsistency
 }

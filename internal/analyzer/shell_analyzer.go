@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/pramod/aur-curator/internal/domain"
 	"github.com/pramod/aur-curator/internal/git"
 )
 
-// shellAnalyzer flags new shell invocations in PKGBUILD build()/
-// package()/prepare() bodies and anywhere in .install, plus network
-// access during build. Produces findings with categories "shell_exec",
-// "network_download". A single line may produce both. See
+// shellAnalyzer flags new shell invocations and network access on every
+// Added line of the PKGBUILD and .install: top-level PKGBUILD code runs
+// when makepkg sources the file, and every function runs at build time
+// (#474). Produces findings with categories "shell_exec",
+// "network_download" (a single line may produce both), and
+// "install_changed" for a .install file added or changed (#476). See
 // docs/domain/analyzer-specs.md § Shell Analyzer.
 type shellAnalyzer struct{}
 
@@ -26,72 +29,72 @@ type shellRule struct {
 
 var shellRules = []shellRule{
 	{
-		category: "network_download",
+		category: CategoryNetworkDownload,
 		label:    "Network download",
 		re:       regexp.MustCompile(`\bcurl\b`),
 	},
 	{
-		category: "network_download",
+		category: CategoryNetworkDownload,
 		label:    "Network download",
 		re:       regexp.MustCompile(`\bwget\b`),
 	},
 	{
-		category: "network_download",
+		category: CategoryNetworkDownload,
 		label:    "Network download",
 		re:       regexp.MustCompile(`\bgit\s+clone\b`),
 	},
 	{
-		category: "network_download",
+		category: CategoryNetworkDownload,
 		label:    "Network download",
 		re:       regexp.MustCompile(`\bnc\s+-`),
 	},
 	{
-		category: "network_download",
+		category: CategoryNetworkDownload,
 		label:    "Network download",
 		re:       regexp.MustCompile(`/dev/tcp/`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`\beval\b`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`\bbash\s+-c\b`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`\bsh\s+-c\b`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`^\s*source\s+\S+`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`^\s*\.\s+\S+`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile("`[^`]+`"),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`\$\([^)]*\)`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`\|\s*(bash|sh)\b`),
 	},
 	{
-		category: "shell_exec",
+		category: CategoryShellExec,
 		label:    "Dynamic shell execution",
 		re:       regexp.MustCompile(`base64\s+-d.*\|\s*(bash|sh)`),
 	},
@@ -100,41 +103,35 @@ var shellRules = []shellRule{
 func (a *shellAnalyzer) Run(ctx context.Context, diff *git.GitDiff) ([]domain.Finding, error) {
 	var findings []domain.Finding
 
-	var pkgbuild, install *git.FileDiff
+	// Every PKGBUILD and .install file in the diff: a split package can
+	// have several .install files (before #476 only the last was scanned).
 	for i := range diff.Files {
-		switch diff.Files[i].Kind {
-		case git.FileKindPKGBUILD:
-			pkgbuild = &diff.Files[i]
-		case git.FileKindInstall:
-			install = &diff.Files[i]
+		f := &diff.Files[i]
+		if f.Kind != git.FileKindPKGBUILD && f.Kind != git.FileKindInstall {
+			continue
 		}
-	}
-
-	if pkgbuild != nil {
-		parsed := parsePKGBUILDDiff(pkgbuild.Patch)
-		for _, fn := range parsed.Functions {
-			for _, entry := range fn.AddedLines {
-				findings = append(findings, scanLine(a.Name(), entry.Value, pkgbuild.Path, entry.Line, fn.Name)...)
-			}
-		}
-	}
-
-	if install != nil {
-		for _, l := range splitPatchLines(install.Patch) {
+		firstAdded := 0
+		for _, l := range splitPatchLines(f.Patch) {
 			if l.kind != lineAdded {
 				continue
 			}
-			findings = append(findings, scanLine(a.Name(), l.text, install.Path, l.newLineNo, "")...)
+			if firstAdded == 0 {
+				firstAdded = l.newLineNo
+			}
+			findings = append(findings, scanLine(a.Name(), l.text, f.Path, l.newLineNo)...)
+		}
+		if f.Kind == git.FileKindInstall {
+			if finding, ok := installChanged(a.Name(), f, firstAdded); ok {
+				findings = append(findings, finding)
+			}
 		}
 	}
 
 	return findings, nil
 }
 
-// scanLine checks one added line against both pattern sets. inFunc, if
-// non-empty, is a PKGBUILD function name for the Summary; empty means
-// the line came from .install.
-func scanLine(analyzerName, line, path string, lineNo int, inFunc string) []domain.Finding {
+// scanLine checks one added line against both pattern sets.
+func scanLine(analyzerName, line, path string, lineNo int) []domain.Finding {
 	var findings []domain.Finding
 
 	seen := map[string]bool{}
@@ -150,7 +147,7 @@ func scanLine(analyzerName, line, path string, lineNo int, inFunc string) []doma
 		findings = append(findings, domain.Finding{
 			Analyzer: analyzerName,
 			Category: rule.category,
-			Summary:  summaryFor(rule.label, inFunc, line),
+			Summary:  fmt.Sprintf("%s: %s", rule.label, line),
 			Location: location(path, lineNo),
 		})
 
@@ -160,9 +157,33 @@ func scanLine(analyzerName, line, path string, lineNo int, inFunc string) []doma
 	return findings
 }
 
-func summaryFor(label, inFunc, line string) string {
-	if inFunc != "" {
-		return fmt.Sprintf("%s in %s(): %s", label, inFunc, line)
+// installChanged reports a .install file that was added or changed; a
+// deleted one runs nothing and is not reported (#476). Added or deleted
+// is read from git's header lines, before the first hunk.
+func installChanged(analyzerName string, f *git.FileDiff, firstAdded int) (domain.Finding, bool) {
+	added, deleted := false, false
+	for _, line := range strings.Split(f.Patch, "\n") {
+		if strings.HasPrefix(line, "@@") {
+			break
+		}
+		switch {
+		case strings.HasPrefix(line, "new file mode "), line == "--- /dev/null":
+			added = true
+		case strings.HasPrefix(line, "deleted file mode "), line == "+++ /dev/null":
+			deleted = true
+		}
 	}
-	return fmt.Sprintf("%s: %s", label, line)
+	if deleted {
+		return domain.Finding{}, false
+	}
+	verb := "changed"
+	if added {
+		verb = "added"
+	}
+	return domain.Finding{
+		Analyzer: analyzerName,
+		Category: CategoryInstallChanged,
+		Summary:  fmt.Sprintf(".install %s: %s", verb, f.Path),
+		Location: location(f.Path, firstAdded),
+	}, true
 }

@@ -55,6 +55,37 @@ Keys:
 - `Enter`: open the package
 - `?`: list every key
 
+## Review findings
+
+Running the analyzers (`a` on the Review screen) reads the change being
+reviewed and points at the parts most likely to matter. Nothing is run:
+the PKGBUILD is read as text. Findings point at changes; they are not a
+verdict. A change with no findings still has to be read: the diff is
+the review.
+
+| Analyzer | Reads | Reports (default severity) |
+| --- | --- | --- |
+| Shell | lines the change adds to the PKGBUILD and `.install` files | commands that run other code (`eval`, `bash -c`, `$(…)`, backticks, `source`, a pipe into `sh`) or use the network (`curl`, `wget`, `git clone`, `nc`, `/dev/tcp/`): High; a `.install` file added or changed (pacman runs it as root): Medium |
+| URL | `source` arrays of the old and new PKGBUILD | a download URL the old file did not have: High |
+| Depends | dependency arrays of the old and new PKGBUILD | packages added to `depends`, `makedepends`, `checkdepends` or `optdepends`: Medium |
+| Checksum | `validpgpkeys`, checksum arrays, `pkgver` and `pkgrel` of the old and new PKGBUILD | every PGP key removed: High; a key added or replaced: Medium; a checksum replaced by `SKIP` or emptied: High; checksums changed: Low; version changed: Low |
+| Pkgbuild | arrays of the new PKGBUILD | an array the analyzers could not read: High. Check those lines in the diff |
+
+Arrays are compared entry by entry, wherever they are in the file and
+however they are quoted: moving or reformatting an entry is not a
+finding. What they cannot see:
+
+- Variables are not expanded. A `source` entry written as
+  `${url}/x.tar.gz` reads the same when `url=` changes: check that line
+  yourself. Brace patterns (`qt5-{base,svg}`) are compared as one word.
+- Every assignment counts, in any `if` or `package_*()` function, even
+  where only one would run.
+- Checksums are compared by position: when sources are added or
+  removed, a changed checksum can read as removed or the other way
+  round. A deleted checksum array is not reported (makepkg refuses to
+  build sources no checksum verifies), so a switch to a weaker remaining
+  algorithm shows only in the diff.
+
 ## Usage
 
 ```

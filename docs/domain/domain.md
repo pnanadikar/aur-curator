@@ -1,6 +1,6 @@
 # Domain Model: aur-curator
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-31
 > Status: Active
 > Companion docs: architecture.md, interfaces.md, workflow.md, risk-analysis.md
 > Code: `internal/domain`
@@ -515,6 +515,17 @@ Every record the build engine saves carries both `lastSuccessBuildID` and
 Pending → Running → Success or Failed. A successful build becomes the
 package's last success; `confirmed` and then `published` are set on it by
 the manual Confirm and Publish steps.
+
+### Build Environment
+
+makepkg runs with the user's environment minus a denylist (#473):
+`AUR_CURATOR_*` (the Gitea token), names ending in `_TOKEN`, `_SECRET`
+or `_PASSWORD`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`,
+`DBUS_SESSION_BUS_ADDRESS`, `SSH_ASKPASS`, `SUDO_ASKPASS`, `GIT_ASKPASS`,
+`DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY`. The build log's first line
+names the variables removed, never their values, or says `none`.
+Removing a socket's address does not hide the socket: a build that knows
+the default path still reaches it (`threat-model.md` B1, B5).
 
 ### Latest Attempt and Last Success
 

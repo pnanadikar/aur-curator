@@ -1,6 +1,8 @@
 package deps
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/pramod/aur-curator/internal/analyzer"
@@ -8,6 +10,7 @@ import (
 	"github.com/pramod/aur-curator/internal/build"
 	"github.com/pramod/aur-curator/internal/catalog"
 	"github.com/pramod/aur-curator/internal/domain"
+	"github.com/pramod/aur-curator/internal/errorlog"
 	"github.com/pramod/aur-curator/internal/git"
 	"github.com/pramod/aur-curator/internal/policy"
 	"github.com/pramod/aur-curator/internal/publish"
@@ -50,7 +53,12 @@ func NewDependencies(
 	buildStore := jsonstore.NewBuildStore(paths)
 	artStore := jsonstore.NewArtifactStore(paths)
 	analyzers := analyzer.New()
-	policyEngine := policy.NewEngine(domain.PolicyConfig{})
+	// An unmapped finding category is a bug: ranked High, and logged once
+	// per category per run (#475).
+	policyEngine := policy.NewEngine(domain.PolicyConfig{}, policy.WithUnmappedHook(func(category string) {
+		_ = errorlog.Log(context.Background(), cfg.RootPath, "policy",
+			fmt.Sprintf("finding category %q has no severity mapping; ranked High", category))
+	}))
 	reviewEngine := review.NewEngine(provider, reviewStore, analyzers, policyEngine)
 
 	makepkgBuilder := build.MakepkgBuilder{}

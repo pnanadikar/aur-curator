@@ -1,6 +1,25 @@
 package screens
 
-import "github.com/pramod/aur-curator/internal/lifecycle"
+import (
+	"github.com/pramod/aur-curator/internal/lifecycle"
+	"github.com/pramod/aur-curator/internal/widgets"
+)
+
+// scrollActions are the content-pane scroll keys of Review and Package
+// Details. They are listed in the full help only: the compact bar is not
+// cut to the screen width, and a wrapped bar would throw off the
+// content-height calculation (#471).
+var scrollActions = []widgets.Action{
+	{Key: "↑/↓ k/j", Label: "Scroll line", Enabled: true},
+	{Key: "PgUp/PgDn", Label: "Scroll page", Enabled: true},
+	{Key: "Home/End", Label: "Top/Bottom", Enabled: true},
+}
+
+// withScrollActions returns actions followed by scrollActions, for the
+// full help.
+func withScrollActions(actions []widgets.Action) []widgets.Action {
+	return append(append([]widgets.Action(nil), actions...), scrollActions...)
+}
 
 // Prerequisite texts for unavailable actions, shown in the full help
 // (tui-package-details.md § Action Bar Convention). Each is written once

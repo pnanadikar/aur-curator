@@ -8,7 +8,7 @@
 >
 > If the two documents disagree, `review.md` takes precedence.
 ---
-> Last updated: 2026-10-19
+> Last updated: 2026-10-31
 > Status: Active
 > Companion docs: ui-overview.md, workflow.md, domain.md
 
@@ -120,7 +120,7 @@ the application never implies comparison against a "published version".
 | **.SRCINFO** | Dedicated diff for `.SRCINFO`. |
 | **.install** | Dedicated diff for `*.install` files. |
 | **Patches** | Dedicated diff for patch files (`*.patch`, `*.diff`). |
-| **Findings** | Not a diff — shows analyzer output. Displays one of three explicit states: `Not Run`, `0 findings`, or `N findings`. These are distinct and never collapsed into each other — "not run" must never read as "0 findings." |
+| **Findings** | Not a diff — shows analyzer output. Displays one of three explicit states: `Not Run`, `0 findings`, or `N findings`. These are distinct and never collapsed into each other — "not run" must never read as "0 findings." Once the analyzers have run, the tab's first line is the dimmed note `Findings point at changes; they are not a verdict. The diff is the review.` (#474, #484); with no findings it then says `No findings.` A finding whose category has no severity puts the § Internal Inconsistency lines, in the error style, above that note. Findings are numbered `i/N` in display order (§ Findings Format, #471). |
 
 `.SRCINFO`, `.install` and Patches are **always shown**, and enabled only
 when this review changes a file of their kind; otherwise they are dimmed
@@ -135,9 +135,12 @@ Ctrl+Left). Dimmed tabs are skipped during tab navigation, consistent
 with the dimmed-action rules (`tui-package-details.md` § Action Bar
 Convention). TAB/SHIFT+TAB
 never switch tabs on this screen (see the note at the top of this
-file). The active tab's content pane always has focus and consumes
-PgUp/PgDn to scroll. Switching to a diff tab shows that tab's files from
-the top.
+file). The active tab's content pane always has focus and consumes the
+scroll keys: `↑`/`↓` and `k`/`j` one line, `PgUp`/`PgDn` a page, `Home`/`End`
+to the top or bottom (#344, #471). Only `PgUp`/`PgDn` reach the viewport's
+own key handling, which would also act on `f`, `b`, `d`, `u`, space, `h` and
+`l`; `←`/`→` are unbound (long lines are for a pager, #488). Switching to a
+diff tab shows that tab's files from the top.
 
 ### 4. Reviewer Notes
 
@@ -174,6 +177,38 @@ currently active. They are not per-file or per-diff actions.
 Dimmed actions are not focusable via keyboard navigation, and pressing
 their key is a no-op (Action Bar Convention). `?` does nothing while the
 Approve or Reject modal is open: the modal owns every key.
+
+The full help (`?`) also lists the scroll keys, after the actions (#471).
+They are not in the compact bar: it is not cut to the screen width, and a
+wrapped bar would throw off the content-height calculation.
+
+```text
+^PgDn/^PgUp  Tabs           ^X           Reject         PgUp/PgDn    Scroll page
+a            Run Analyzers  Esc          Back           Home/End     Top/Bottom
+ENTER        Approve        ↑/↓ k/j      Scroll line    ?            Close help
+```
+
+### Findings Format
+
+Below the scope note and the `Findings: N (…)` header, each finding is
+one line, numbered in display order (severity, then as reported), with
+its Location, when it has one, on the next line (#471):
+
+```text
+ 1/12 [HIGH] url: New source URL: https://a.example/x.tar.gz
+             PKGBUILD:29
+ …
+12/12 [LOW] checksum: Checksum values updated
+             PKGBUILD:41
+```
+
+- The number is right-aligned to the width of N, so the severities line
+  up; the Location is indented by the number column plus seven spaces.
+- The numbering is how a list longer than the pane shows that more
+  follow: it changes the content only, never the layout (no extra line,
+  no change to the pane height).
+- Tabs in a summary (the Shell analyzer quotes the PKGBUILD line as
+  written) are shown as four spaces, as in the diff.
 
 ---
 
@@ -256,6 +291,23 @@ Two-step confirmation, always shown regardless of Findings status.
 - Rejection does not modify the local repository or revert anything — it
   only records the decision. A future upstream commit may still be reviewed
   independently (see `workflow.md` § Review Decisions).
+
+---
+
+## Internal Inconsistency
+
+A finding whose category has no severity mapping is a bug
+(`risk-analysis.md` § Unmapped categories). It is ranked HIGH. When the
+screen loads such a review, a modal shows, for each such category:
+
+```
+Internal inconsistency: finding category "<name>" has no severity (ranked HIGH).
+Please file a bug report with this line, the package name and aur-curator's version.
+```
+
+`ENTER` or `ESC` dismisses it. It shows once per opening of the screen.
+The same lines stay at the top of the Findings tab while the review is
+shown (#475).
 
 ---
 

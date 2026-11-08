@@ -1,6 +1,6 @@
 # TUI Dashboard Wireframe
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-06
 > Status: Active
 > Companion docs: ui-overview.md, domain.md, workflow.md, tui-package-details.md
 
@@ -19,7 +19,7 @@ git state and the AUR update check. No dashboard field is stored.
 
 ```text
 Operation cancelled: duplicati-bin                                        ← toast, only while active
-aur-curator          Workspace: /home/pramod/repos/aur                    ← App header
+aur-curator v1.2.0          Workspace: /home/pramod/repos/aur             ← App header
 Last Refresh: 14:24
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ [1] Packages   [2] Repository   [3] Settings   [4] Help   [q] Quit                                                 │
@@ -347,7 +347,8 @@ brings up the line: a terminal too narrow cuts the rows on the right
 Drawn by the App, around every screen, not by the Dashboard:
 
 - **Header**: two lines above the screen's box. The first shows
-  `aur-curator` and the workspace path; the second shows the last refresh
+  `aur-curator`, the running version dimmed (the same value as
+  `--version`, #481) and the workspace path; the second shows the last refresh
   time (`Last Refresh: HH:MM`), updated by `R` and by each package-list
   load.
 - **Toast row**: the very first line, above the header. Short messages

@@ -42,6 +42,12 @@ func (c *ContentPane) Update(msg tea.Msg) tea.Cmd {
 // GotoTop scrolls to the first line (Home, #344).
 func (c *ContentPane) GotoTop() { c.viewport.GotoTop() }
 
+// LineUp scrolls up one line (Up, k: #471).
+func (c *ContentPane) LineUp() { c.viewport.ScrollUp(1) }
+
+// LineDown scrolls down one line (Down, j: #471).
+func (c *ContentPane) LineDown() { c.viewport.ScrollDown(1) }
+
 // GotoBottom scrolls to the last line (End, #344).
 func (c *ContentPane) GotoBottom() { c.viewport.GotoBottom() }
 
