@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 
 // giteaTokenEnv is the environment variable that overrides the config
 // file's giteaToken key.
-const giteaTokenEnv = "AUR_CURATOR_GITEA_TOKEN"
+const giteaTokenEnv = "AUR_CURATOR_GITEA_TOKEN" //nolint:gosec // the name of an environment variable, not a credential
 
 // builderMakepkg is the default and, for now, the only builderBackend
 // value Load accepts (#408).
@@ -70,6 +71,8 @@ func GiteaTokenSource(path string) string {
 //     after a leading ~ is expanded
 //   - repositoryPath and rootPath are the same, or one is inside the other
 //   - giteaBaseURL is not an http(s) URL with a host, or giteaOrg has a /
+//   - giteaBaseURL is http:// to a host other than this machine: every
+//     API request carries the token (#505)
 //   - GiteaToken cannot be resolved from EITHER the
 //     AUR_CURATOR_GITEA_TOKEN environment variable OR the file's
 //     giteaToken key (either source alone is sufficient; blank is unset)
@@ -170,6 +173,8 @@ func Load(path string) (domain.WorkspaceConfig, error) {
 
 	if u, err := url.Parse(cfg.GiteaBaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return domain.WorkspaceConfig{}, fmt.Errorf("config: giteaBaseURL must be an http:// or https:// URL with a host, got %q (file: %s)", cfg.GiteaBaseURL, path)
+	} else if u.Scheme == "http" && !isLoopback(u.Hostname()) {
+		return domain.WorkspaceConfig{}, fmt.Errorf("config: giteaBaseURL %q would send the Gitea token unencrypted: use https://, or http:// only to localhost (file: %s)", cfg.GiteaBaseURL, path)
 	}
 	if strings.Contains(cfg.GiteaOrg, "/") {
 		return domain.WorkspaceConfig{}, fmt.Errorf("config: giteaOrg must be an organization name without /, got %q (file: %s)", cfg.GiteaOrg, path)
@@ -380,4 +385,15 @@ func tokenFileWarning(path string) string {
 		return fmt.Sprintf("config: warning: giteaToken file %s may be readable by other users", path)
 	}
 	return ""
+}
+
+// isLoopback reports whether host names this machine: localhost or a
+// loopback address. Over http://, only such a host keeps the Gitea token
+// off the network (#505).
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

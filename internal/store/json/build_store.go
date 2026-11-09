@@ -87,7 +87,7 @@ func (s *BuildStore) SaveLastSuccess(pkgName domain.PackageName, build *domain.B
 	}
 
 	dir := s.paths.PackageDir(pkgName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create last-success build directory %s: %w", dir, err)
 	}
 
@@ -97,7 +97,7 @@ func (s *BuildStore) SaveLastSuccess(pkgName domain.PackageName, build *domain.B
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(s.paths.LastSuccessBuildPath(pkgName), data, 0o644); err != nil {
+	if err := os.WriteFile(s.paths.LastSuccessBuildPath(pkgName), data, 0o600); err != nil {
 		return fmt.Errorf("write last-success build for %s: %w", pkgName, err)
 	}
 	return nil
@@ -113,7 +113,7 @@ func (s *BuildStore) Save(pkgName domain.PackageName, build *domain.Build) error
 	}
 
 	dir := s.paths.PackageDir(pkgName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create build directory %s: %w", dir, err)
 	}
 
@@ -123,7 +123,7 @@ func (s *BuildStore) Save(pkgName domain.PackageName, build *domain.Build) error
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(s.paths.BuildPath(pkgName), data, 0o644); err != nil {
+	if err := os.WriteFile(s.paths.BuildPath(pkgName), data, 0o600); err != nil {
 		return fmt.Errorf("write build for %s: %w", pkgName, err)
 	}
 	return nil

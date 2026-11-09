@@ -68,7 +68,9 @@ type keyMap struct {
 	mergeKey   key.Binding
 	confirmKey key.Binding
 	publishKey key.Binding
-	scrollKey  key.Binding
+	// viewKey opens the active tab's content in the pager (#488).
+	viewKey   key.Binding
+	scrollKey key.Binding
 	// lineUpKey and lineDownKey scroll the content pane by one line
 	// (#471).
 	lineUpKey   key.Binding
@@ -119,6 +121,10 @@ func newDetailKeys() keyMap {
 		publishKey: key.NewBinding(
 			key.WithKeys("p"),
 			key.WithHelp("p", "Publish"),
+		),
+		viewKey: key.NewBinding(
+			key.WithKeys("v"),
+			key.WithHelp("v", "View"),
 		),
 		scrollKey: key.NewBinding(
 			key.WithKeys("pgup", "pgdown"),
@@ -625,6 +631,16 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		return m, cmd
 	}
 
+	// v: the active tab's content in the pager (tui-review.md § Your Own
+	// Tools, #488). No Package Details tab shows a diff.
+	if key.Matches(keyMsg, m.keys.viewKey) {
+		content := m.contentPane.Content()
+		if content == "" {
+			return m, nil
+		}
+		return m, openPager(m.pkgName, pagerName(detailTabLabels[m.tab], false), content)
+	}
+
 	// Nav menu digit keys.
 	switch keyMsg.String() {
 	case "1":
@@ -1018,10 +1034,12 @@ func renderCommitsContent(commits []git.Commit) string {
 		if len(hash) > 8 {
 			hash = hash[:8]
 		}
+		// Author and subject are the committer's text: escaped, never
+		// raw (#491).
 		line := fmt.Sprintf("  %s  %s  %s  %s",
 			theme.DiffHeaderStyle().Render(hash),
-			theme.SubtleStyle().Render(c.Author),
-			theme.DiffContextStyle().Render(c.Subject),
+			theme.RenderEscaped(c.Author, theme.SubtleStyle()),
+			theme.RenderEscaped(c.Subject, theme.DiffContextStyle()),
 			theme.SubtleStyle().Render(c.Date),
 		)
 		b.WriteString(line + "\n")
@@ -1093,10 +1111,10 @@ func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error) s
 	}
 	if err != nil {
 		// Distinguish whole-store failure from partial-record failure.
-		if _, ok := err.(interface{ Unwrap() []error }); ok {
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
 			// Partial: some records unreadable (errors.Join always returns
 			// this interface, even for a single record).
-			unwrapped := err.(interface{ Unwrap() []error }).Unwrap()
+			unwrapped := joined.Unwrap()
 			var b strings.Builder
 			if len(unwrapped) == 1 {
 				b.WriteString(theme.ErrorStyle().Render("⚠ 1 artifact record could not be read (it may belong to any package):"))
@@ -1171,9 +1189,13 @@ func (m PackageDetailModel) actions() []widgets.Action {
 		{Key: "B", Label: "Build", Enabled: m.isBuildEnabled(), Reason: prereqMergedOrLater},
 		{Key: "C", Label: "Confirm", Enabled: m.isConfirmEnabled(), Reason: prereqBuilt},
 		{Key: "P", Label: "Publish", Enabled: m.isPublishEnabled(), Reason: prereqConfirmed},
+		{Key: "v", Label: "View", Enabled: m.contentPane.Content() != "", Reason: reasonNothingToView},
 		{Key: "Esc", Label: "Back", Enabled: true},
 	}
 }
+
+// detailTabLabels are the tab bar's labels, indexed by DetailTab.
+var detailTabLabels = [...]string{TabSummary: "Summary", TabCommits: "Commits", TabBuildLog: "Build Log", TabArtifactHistory: "Artifacts"}
 
 // renderActionBar renders the compact bar, or the full help while it is
 // open. Its height is measured by contentHeight via fixedPartsBelowContent.

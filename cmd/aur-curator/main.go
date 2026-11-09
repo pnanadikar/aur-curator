@@ -43,7 +43,7 @@ func main() {
 	debugLogFile, traceFile, positional := extractFlags(os.Args[1:])
 
 	if debugLogFile != "" {
-		if f, err := os.OpenFile(debugLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		if f, err := os.OpenFile(debugLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 			debug.Set(f)
 		}
 	} else if os.Getenv("AUR_CURATOR_DEBUG") != "" {
@@ -69,7 +69,7 @@ func main() {
 		tracePath = filepath.Join(cfg.RootPath, traceLogName)
 	}
 	if tracePath != "" {
-		if f, err := os.OpenFile(tracePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		if f, err := os.OpenFile(tracePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 			trace.SetSink(f)
 		} else {
 			fmt.Fprintf(os.Stderr, "trace: cannot open %s: %v\n", tracePath, err)
@@ -499,7 +499,7 @@ func runRemove(
 // pacmanInstalledVersion reports the installed version of name, or "" if
 // it is not installed. It never needs root and never changes the system.
 func pacmanInstalledVersion(ctx context.Context, name string) (string, error) {
-	out, err := exec.CommandContext(ctx, "pacman", "-Q", name).Output()
+	out, err := exec.CommandContext(ctx, "pacman", "-Q", "--", name).Output() //nolint:gosec // pacman itself; the name follows --
 	return interpretPacmanQ(out, err)
 }
 

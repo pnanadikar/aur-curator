@@ -73,7 +73,7 @@ func newScreen385(t *testing.T) ReviewScreen {
 	m := NewReviewScreen("yay", nil, nil, nil, domain.WorkspaceConfig{})
 	m.loading = false
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	return next.(ReviewScreen)
+	return next
 }
 
 func TestSetDiffEnablesFileTabs385(t *testing.T) {
@@ -104,7 +104,7 @@ func TestSetDiffEnablesFileTabs385(t *testing.T) {
 func pressNextTab385(t *testing.T, m ReviewScreen) ReviewScreen {
 	t.Helper()
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlPgDown})
-	return next.(ReviewScreen)
+	return next
 }
 
 // TestTabSwitchShowsTabFiles: switching tabs refills the one diff pane with

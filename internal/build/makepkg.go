@@ -22,11 +22,11 @@ type MakepkgBuilder struct{}
 // Build runs makepkg inside workspaceDir, capturing output to logPath
 // and returning paths to produced .pkg.tar.* artifacts.
 func (MakepkgBuilder) Build(ctx context.Context, workspaceDir string, logPath string) (BuildResult, error) {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
 		return BuildResult{}, fmt.Errorf("create log directory %s: %w", filepath.Dir(logPath), err)
 	}
 
-	logFile, err := os.Create(logPath)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("create log file: %w", err)
 	}

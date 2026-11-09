@@ -47,11 +47,11 @@ func Log(ctx context.Context, activityLogPath, event, pkgName string, kv ...stri
 	defer mu.Unlock()
 
 	dir := filepath.Dir(activityLogPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("activitylog: mkdir %s: %w", dir, err)
 	}
 
-	f, err := os.OpenFile(activityLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(activityLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("activitylog: open %s: %w", activityLogPath, err)
 	}
@@ -67,7 +67,7 @@ func Log(ctx context.Context, activityLogPath, event, pkgName string, kv ...stri
 	}
 
 	if _, err := fmt.Fprintf(f, "%s %s\n", ts, strings.Join(parts, " ")); err != nil {
-		f.Close() //nolint:errcheck // best-effort; already returning write error
+		f.Close() //nolint:errcheck,gosec // best-effort; already returning write error
 		return fmt.Errorf("activitylog: write %s: %w", activityLogPath, err)
 	}
 

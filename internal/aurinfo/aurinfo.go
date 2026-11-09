@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/pramod/aur-curator/internal/domain"
+	"github.com/pramod/aur-curator/internal/sanitize"
 	"github.com/pramod/aur-curator/internal/trace"
 )
 
@@ -135,6 +137,89 @@ func (c *Client) BulkCheck(ctx context.Context, pkgs []domain.PackageName) Check
 // malformed response). The whole round-trip, including reading the body,
 // runs under the client's timeout (see NewClient).
 func (c *Client) FetchAURVersions(ctx context.Context, pkgs []domain.PackageName) (map[domain.PackageName]string, error) {
+	results, err := c.fetchResults(ctx, "FetchAURVersions", pkgs)
+	if err != nil {
+		return nil, err
+	}
+
+	aurMap := make(map[string]string, len(results))
+	for _, r := range results {
+		aurMap[r.Name] = r.Version
+	}
+
+	result := make(map[domain.PackageName]string, len(pkgs))
+	for _, pkg := range pkgs {
+		if ver, found := aurMap[string(pkg)]; found {
+			result[pkg] = ver
+		}
+	}
+
+	return result, nil
+}
+
+// Record is what the AUR reports about one package's ownership and
+// standing (domain.md § AUR Record, #495).
+type Record struct {
+	// Maintainer is the maintainer's AUR user name, "" when Orphaned.
+	Maintainer string
+	// Orphaned is true when the AUR reports no maintainer (null).
+	Orphaned bool
+	// CoMaintainers are the co-maintainers' user names, sorted; nil
+	// when there are none (the AUR leaves the key out).
+	CoMaintainers []string
+	// Submitter is the user who first submitted the package.
+	Submitter string
+	// FirstSubmitted is when the package was first submitted; zero if
+	// the AUR did not say.
+	FirstSubmitted time.Time
+	// NumVotes and Popularity are the AUR's vote count and popularity.
+	NumVotes   int
+	Popularity float64
+}
+
+// Lookup reads one package's Record with a single RPC info request,
+// under the client's timeout (see NewClient). It returns an error
+// wrapping ErrAURPackageNotFound when the AUR has no package of that
+// name, and one wrapping ErrAURClientUnreachable when the request fails
+// (network, HTTP error code, malformed response, timeout). An orphaned
+// package is a Record with Orphaned set, never an error.
+func (c *Client) Lookup(ctx context.Context, pkg domain.PackageName) (Record, error) {
+	results, err := c.fetchResults(ctx, "Lookup", []domain.PackageName{pkg})
+	if err != nil {
+		return Record{}, err
+	}
+
+	for _, r := range results {
+		if r.Name != string(pkg) {
+			continue
+		}
+		rec := Record{
+			Orphaned:   r.Maintainer == nil,
+			Submitter:  r.Submitter,
+			NumVotes:   r.NumVotes,
+			Popularity: r.Popularity,
+		}
+		if r.Maintainer != nil {
+			rec.Maintainer = *r.Maintainer
+		}
+		if len(r.CoMaintainers) > 0 {
+			rec.CoMaintainers = slices.Clone(r.CoMaintainers)
+			slices.Sort(rec.CoMaintainers)
+		}
+		if r.FirstSubmitted > 0 {
+			rec.FirstSubmitted = time.Unix(r.FirstSubmitted, 0).UTC()
+		}
+		return rec, nil
+	}
+
+	return Record{}, fmt.Errorf("%w: %s", ErrAURPackageNotFound, pkg)
+}
+
+// fetchResults performs one RPC v5 info request for pkgs and returns the
+// decoded results. The whole round-trip, including reading the body, runs
+// under the client's timeout. Every failure wraps ErrAURClientUnreachable.
+// cmd names the caller in the trace.
+func (c *Client) fetchResults(ctx context.Context, cmd string, pkgs []domain.PackageName) ([]aurResult, error) {
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
@@ -142,7 +227,7 @@ func (c *Client) FetchAURVersions(ctx context.Context, pkgs []domain.PackageName
 	}
 
 	url := c.buildURL(pkgs)
-	trace.Log(ctx, "aurinfo", "cmd", "FetchAURVersions", "url", url, "pkgCount", len(pkgs))
+	trace.Log(ctx, "aurinfo", "cmd", cmd, "url", url, "pkgCount", len(pkgs))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -169,19 +254,7 @@ func (c *Client) FetchAURVersions(ctx context.Context, pkgs []domain.PackageName
 		return nil, fmt.Errorf("%w: decode response: %w", ErrAURClientUnreachable, err)
 	}
 
-	aurMap := make(map[string]string, len(rpcResponse.Results))
-	for _, r := range rpcResponse.Results {
-		aurMap[r.Name] = r.Version
-	}
-
-	result := make(map[domain.PackageName]string, len(pkgs))
-	for _, pkg := range pkgs {
-		if ver, found := aurMap[string(pkg)]; found {
-			result[pkg] = ver
-		}
-	}
-
-	return result, nil
+	return rpcResponse.Results, nil
 }
 
 // CompareVersions compares an AUR-reported version against a locally
@@ -244,7 +317,12 @@ func scanScalar(raw string, name string) (val string, found, computed bool) {
 		// ${...}, $(...), or the scalar itself), which aur-curator does
 		// not evaluate. None of epoch, pkgver or pkgrel can contain these
 		// characters literally.
-		if strings.ContainsAny(v, "$`") {
+		//
+		// A control, bidi or zero-width character makes the value not
+		// readable too: printed on the Dashboard or in update's prompts
+		// it would show something other than itself (#491). The diff
+		// shows the line escaped.
+		if strings.ContainsAny(v, "$`") || sanitize.HasHidden(v) {
 			return "", true, true
 		}
 		return stripPKGBUILDQuotes(v), true, false
@@ -305,8 +383,16 @@ type aurRPCResponse struct {
 	Results     []aurResult `json:"results"`
 }
 
-// aurResult is a single package entry in the AUR RPC response.
+// aurResult is a single package entry in the AUR RPC response. In aurweb,
+// Maintainer is always present and null when the package is orphaned;
+// CoMaintainers is present only when there is at least one (#495).
 type aurResult struct {
-	Name    string `json:"Name"`
-	Version string `json:"Version"`
+	Name           string   `json:"Name"`
+	Version        string   `json:"Version"`
+	Maintainer     *string  `json:"Maintainer"`
+	CoMaintainers  []string `json:"CoMaintainers"`
+	Submitter      string   `json:"Submitter"`
+	FirstSubmitted int64    `json:"FirstSubmitted"`
+	NumVotes       int      `json:"NumVotes"`
+	Popularity     float64  `json:"Popularity"`
 }

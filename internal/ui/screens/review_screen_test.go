@@ -32,20 +32,20 @@ func TestReviewScreenApproveRequiresConfirmation(t *testing.T) {
 	model, _ = loadReadyScreen(t, model)
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modalFlow != modalApprove {
 		t.Fatalf("modal flow = %v, want approve", screen.modalFlow)
 	}
 
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.modalFlow != modalApprove {
 		t.Fatalf("after 'a', modal flow = %v, want approve (cancel returns to modal)", screen.modalFlow)
 	}
 
 	// Cancel via Esc — should close modal and return to review screen
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.modal != nil {
 		t.Fatal("modal should be dismissed after Esc")
 	}
@@ -55,20 +55,20 @@ func TestReviewScreenApproveRequiresConfirmation(t *testing.T) {
 
 	// Reopen approve and confirm
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.modalFlow != modalApprove {
 		t.Fatalf("reopened modal flow = %v, want approve", screen.modalFlow)
 	}
 
 	updated, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd == nil {
 		t.Fatal("approve with empty notes should save review")
 	}
 
 	msg := cmd()
 	updated, cmd = screen.Update(msg)
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd == nil {
 		t.Fatal("expected quit command")
 	}
@@ -106,14 +106,14 @@ func TestReviewScreenRejectSkipStoresEmptyRationale(t *testing.T) {
 	model, _ = loadReadyScreen(t, model)
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modalFlow != modalRejectConfirm {
 		t.Fatalf("modal flow = %v, want reject confirm", screen.modalFlow)
 	}
 
 	// Enter confirms the reject
 	updated, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.modalFlow != modalRejectReason {
 		t.Fatalf("modal flow = %v, want reject reason", screen.modalFlow)
 	}
@@ -121,7 +121,7 @@ func TestReviewScreenRejectSkipStoresEmptyRationale(t *testing.T) {
 
 	// Esc skips the reason input, saving as rejected
 	updated, cmd = screen.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd == nil {
 		t.Fatal("skip should save rejected review")
 	}
@@ -150,7 +150,7 @@ func TestReviewScreenRejectSkipStoresEmptyRationale(t *testing.T) {
 	}
 
 	updated, _ = screen.Update(msg)
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if store.review == nil {
 		t.Fatal("expected saved review")
 	}
@@ -201,19 +201,19 @@ func TestReviewScreenSaveErrorDispatchesToastAndBack(t *testing.T) {
 	// Enter opens the approval modal, Enter confirms it
 	var cmd tea.Cmd
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if model.modal == nil {
 		t.Fatal("expected approval modal to open on first Enter")
 	}
 	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("approve with empty rationale should save review")
 	}
 
 	result := cmd()
 	updated, cmd = model.Update(result)
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("expected sequence command from reviewSavedMsg")
 	}
@@ -235,7 +235,7 @@ func TestReviewScreenSaveErrorDispatchesToastAndBack(t *testing.T) {
 	}
 
 	updated, _ = model.Update(result)
-	model = updated.(ReviewScreen)
+	model = updated
 	if model.err == nil {
 		t.Fatal("expected error to be set after failed save")
 	}
@@ -266,19 +266,19 @@ func TestReviewScreenAutoMerge_ApproveWithAutoMerge(t *testing.T) {
 	// Enter opens the approval modal, Enter confirms it
 	var cmd tea.Cmd
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if model.modal == nil {
 		t.Fatal("expected approval modal to open on first Enter")
 	}
 	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("approve with empty rationale should save review")
 	}
 
 	result := cmd()
 	updated, cmd = model.Update(result)
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("expected sequence command from reviewSavedMsg")
 	}
@@ -324,12 +324,12 @@ func TestReviewScreenAutoMerge_ApproveWithoutAutoMerge(t *testing.T) {
 	// Enter opens the approval modal, Enter confirms it
 	var cmd tea.Cmd
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if model.modal == nil {
 		t.Fatal("expected approval modal to open on first Enter")
 	}
 	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("approve with empty rationale should save review")
 	}
@@ -372,19 +372,19 @@ func TestReviewScreenAutoMerge_RejectNoMerge(t *testing.T) {
 
 	// ctrl+x opens the reject confirm modal
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
-	model = updated.(ReviewScreen)
+	model = updated
 	if model.modal == nil {
 		t.Fatal("expected reject confirm modal to be open")
 	}
 	// Enter confirms the reject
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if model.modal == nil {
 		t.Fatal("expected reject reason modal to be open after confirmation")
 	}
 	// Esc skips the reason, which saves the review as Rejected
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("reject should save review via saveReviewCmd")
 	}
@@ -392,7 +392,7 @@ func TestReviewScreenAutoMerge_RejectNoMerge(t *testing.T) {
 	// Run the save cmd, then run the sequence it returns
 	result := cmd()
 	updated, cmd = model.Update(result)
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("expected sequence command from reviewSavedMsg")
 	}
@@ -425,7 +425,7 @@ func TestReviewScreenViewFitsAllocatedHeightOnDiffTab(t *testing.T) {
 
 	model, _ := newTestReviewScreen(t)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	model = updated.(ReviewScreen)
+	model = updated
 	updated, _ = model.Update(reviewLoadedMsg{
 		diff: git.GitDiff{
 			UpstreamCommit: "upstream123",
@@ -458,7 +458,7 @@ func TestReviewScreenViewFitsAllocatedHeightOnDiffTab(t *testing.T) {
 			FindingsStatus: domain.FindingsNotRun,
 		},
 	})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	view := model.View()
 	if got := lipgloss.Height(view); got > 30 {
@@ -489,7 +489,7 @@ func TestReviewScreenDiffTabScrollsWithPgDown(t *testing.T) {
 
 	model, _ := newTestReviewScreen(t)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
-	model = updated.(ReviewScreen)
+	model = updated
 	updated, _ = model.Update(reviewLoadedMsg{
 		diff: git.GitDiff{
 			UpstreamCommit: "upstream123",
@@ -511,7 +511,7 @@ func TestReviewScreenDiffTabScrollsWithPgDown(t *testing.T) {
 			FindingsStatus: domain.FindingsNotRun,
 		},
 	})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	before := model.View()
 	if !strings.Contains(before, "line 01") {
@@ -519,7 +519,7 @@ func TestReviewScreenDiffTabScrollsWithPgDown(t *testing.T) {
 	}
 
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	model = updated.(ReviewScreen)
+	model = updated
 	after := model.View()
 
 	if before == after {
@@ -538,26 +538,26 @@ func TestReviewScreenNoOpApproveOnDecidedReview(t *testing.T) {
 
 	// Advance to approved state.
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modalFlow != modalApprove {
 		t.Fatal("first Enter should open approve modal")
 	}
 
 	updated, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd == nil {
 		t.Fatal("approve with empty notes should save review")
 	}
 	msg := cmd()
 	updated, _ = screen.Update(msg)
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.review.Status != domain.ReviewApproved {
 		t.Fatalf("status = %v, want approved", screen.review.Status)
 	}
 
 	// Second Enter on already-approved review should be a no-op.
 	updated2, _ := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen2 := updated2.(ReviewScreen)
+	screen2 := updated2
 	if screen2.modalFlow != modalNone {
 		t.Fatal("second Enter on approved review should be no-op (no modal)")
 	}
@@ -571,31 +571,31 @@ func TestReviewScreenNoOpRejectOnDecidedReview(t *testing.T) {
 
 	// Reject the review first.
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modalFlow != modalRejectConfirm {
 		t.Fatal("ctrl+x should open reject confirm modal")
 	}
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyTab})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyTab})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	updated2, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated2.(ReviewScreen)
+	screen = updated2
 	if cmd == nil {
 		t.Fatal("reject should save review")
 	}
 	msg := cmd()
 	updated3, _ := screen.Update(msg)
-	screen = updated3.(ReviewScreen)
+	screen = updated3
 	if screen.review.Status != domain.ReviewRejected {
 		t.Fatalf("status = %v, want rejected", screen.review.Status)
 	}
 
 	// Second ctrl+x on already-rejected review should be a no-op.
 	updated4, _ := screen.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
-	screen2 := updated4.(ReviewScreen)
+	screen2 := updated4
 	if screen2.modalFlow != modalNone {
 		t.Fatal("second ctrl+x on rejected review should be no-op (no modal)")
 	}
@@ -609,26 +609,26 @@ func TestReviewScreenNoOpAnalyzeOnDecidedReview(t *testing.T) {
 
 	// Advance to approved state.
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modalFlow != modalApprove {
 		t.Fatal("first Enter should open approve modal")
 	}
 
 	updated, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd == nil {
 		t.Fatal("approve with empty notes should save review")
 	}
 	msg := cmd()
 	updated, _ = screen.Update(msg)
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.review.Status != domain.ReviewApproved {
 		t.Fatalf("status = %v, want approved", screen.review.Status)
 	}
 
 	before := screen.loading
 	updated2, cmd2 := screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	screen2 := updated2.(ReviewScreen)
+	screen2 := updated2
 	if screen2.loading != before {
 		t.Fatal("a on an already-decided review should not start loading")
 	}
@@ -686,7 +686,7 @@ func TestApproveWithFindingsShowsModal(t *testing.T) {
 	}
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modal == nil {
 		t.Fatal("expected approval modal to open on Enter")
 	}
@@ -696,8 +696,8 @@ func TestApproveWithFindingsShowsModal(t *testing.T) {
 
 	// Verify the findings are in the rendered modal text
 	view := screen.View()
-	if strings.Contains(view, "No analyzers have been run") {
-		t.Error("expected no 'No analyzers have been run' text when findings are run")
+	if strings.Contains(view, "has not been analysed") {
+		t.Error("expected no 'has not been analysed' text when findings are run")
 	}
 	if !strings.Contains(view, "Approve?") {
 		t.Error("expected 'Approve?' text in modal")
@@ -724,7 +724,7 @@ func TestApproveWithoutFindingsRunShowsNotRunModal(t *testing.T) {
 	model, _ = loadReadyScreen(t, model)
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modal == nil {
 		t.Fatal("expected approval modal to open on Enter")
 	}
@@ -733,8 +733,15 @@ func TestApproveWithoutFindingsRunShowsNotRunModal(t *testing.T) {
 	}
 
 	view := screen.View()
-	if !strings.Contains(view, "No analyzers have been run for this review.") {
-		t.Errorf("expected 'No analyzers have been run' text in modal, got:\n%s", view)
+	// #495: fixed lines naming every check skipped.
+	for _, want := range []string{
+		"This update has not been analysed, so these checks have not run:",
+		"sources, checksums, PGP keys, dependencies, shell code and the",
+		"AUR maintainer. Approve anyway?",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("expected %q in modal, got:\n%s", want, view)
+		}
 	}
 	if !strings.Contains(view, "Approve anyway?") {
 		t.Error("expected 'Approve anyway?' text in modal when findings are not run")
@@ -759,7 +766,7 @@ func TestApproveWithZeroFindingsShowsZeroModal(t *testing.T) {
 	model.review.FindingsStatus = domain.FindingsRun
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modal == nil {
 		t.Fatal("expected approval modal to open on Enter")
 	}
@@ -771,8 +778,8 @@ func TestApproveWithZeroFindingsShowsZeroModal(t *testing.T) {
 	if !strings.Contains(view, "There are 0 findings, approve?") {
 		t.Errorf("expected '0 findings' prompt in modal, got:\n%s", view)
 	}
-	if strings.Contains(view, "No analyzers have been run") {
-		t.Error("expected no 'No analyzers have been run' text when findings are run")
+	if strings.Contains(view, "has not been analysed") {
+		t.Error("expected no 'has not been analysed' text when findings are run")
 	}
 	if strings.Contains(view, "Approve anyway?") {
 		t.Error("expected no 'Approve anyway?' text when findings are run")
@@ -793,14 +800,14 @@ func TestApproveWithFindingsCancelReturnsToReview(t *testing.T) {
 	}
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modal == nil {
 		t.Fatal("expected approval modal to open")
 	}
 
 	// Esc cancels the modal
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.modal != nil {
 		t.Fatal("expected modal to be dismissed after Esc")
 	}
@@ -827,7 +834,7 @@ func TestApproveWithFindingsConfirmSavesReview(t *testing.T) {
 	}
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modal == nil {
 		t.Fatal("expected approval modal to open")
 	}
@@ -841,7 +848,7 @@ func TestApproveWithFindingsConfirmSavesReview(t *testing.T) {
 	// Run the save command
 	result := cmd()
 	updated, _ = screen.Update(result)
-	screen = updated.(ReviewScreen)
+	screen = updated
 
 	if store.review.Status != domain.ReviewApproved {
 		t.Fatalf("status = %q, want approved", store.review.Status)
@@ -864,26 +871,26 @@ func TestRejectFlowSkipsReasonWhenEmpty(t *testing.T) {
 
 	// ctrl+x opens reject confirm, Enter confirms, Esc skips reason
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modalFlow != modalRejectConfirm {
 		t.Fatalf("modal flow = %v, want reject confirm", screen.modalFlow)
 	}
 
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if screen.modalFlow != modalRejectReason {
 		t.Fatalf("modal flow = %v, want reject reason", screen.modalFlow)
 	}
 
 	updated, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd == nil {
 		t.Fatal("reject skip should save review")
 	}
 
 	result := cmd()
 	updated, _ = screen.Update(result)
-	screen = updated.(ReviewScreen)
+	screen = updated
 
 	if store.review.Status != domain.ReviewRejected {
 		t.Fatalf("status = %q, want rejected", store.review.Status)
@@ -903,13 +910,13 @@ func TestRejectFlowAcceptsReasonWhenProvided(t *testing.T) {
 
 	// ctrl+x opens reject confirm, Enter confirms
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.modalFlow != modalRejectConfirm {
 		t.Fatalf("modal flow = %v, want reject confirm", screen.modalFlow)
 	}
 
 	updated, cmd := screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd != nil {
 		cmd() // drain any modal command
 	}
@@ -919,16 +926,16 @@ func TestRejectFlowAcceptsReasonWhenProvided(t *testing.T) {
 
 	// Input is already focused by openRejectReasonModal. Just type and Enter.
 	updated, _ = screen.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("poor")})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	updated, cmd = screen.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	screen = updated.(ReviewScreen)
+	screen = updated
 	if cmd == nil {
 		t.Fatal("reject with reason should save review")
 	}
 
 	result := cmd()
 	updated, _ = screen.Update(result)
-	screen = updated.(ReviewScreen)
+	screen = updated
 
 	if store.review.Status != domain.ReviewRejected {
 		t.Fatalf("status = %q, want rejected", store.review.Status)
@@ -942,7 +949,7 @@ func loadReadyScreen(t *testing.T, model ReviewScreen) (ReviewScreen, tea.Cmd) {
 	t.Helper()
 
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	model = updated.(ReviewScreen)
+	model = updated
 	updated, _ = model.Update(reviewLoadedMsg{
 		diff: git.GitDiff{
 			UpstreamCommit: "upstream123",
@@ -971,7 +978,7 @@ func loadReadyScreen(t *testing.T, model ReviewScreen) (ReviewScreen, tea.Cmd) {
 			ReviewerNotes:  "",
 		},
 	})
-	model = updated.(ReviewScreen)
+	model = updated
 	return model, nil
 }
 
@@ -1107,7 +1114,7 @@ func TestReviewScreenRenderTabContentFindings(t *testing.T) {
 	})
 	// The screen shows the stored review: the findings appear with the
 	// reload that follows the operation (#399).
-	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+	updated, _ = updated.Update(reviewLoadedMsg{review: &domain.Review{
 		PackageName:    "yay",
 		Status:         domain.ReviewPending,
 		FindingsStatus: domain.FindingsRun,
@@ -1116,7 +1123,7 @@ func TestReviewScreenRenderTabContentFindings(t *testing.T) {
 			{Category: "url_new", Summary: "New URL"},
 		},
 	}})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	view := model.View()
 	if !strings.Contains(view, "Findings:") {
@@ -1148,7 +1155,7 @@ func TestReviewScreenRenderFindingsContentNotRun(t *testing.T) {
 
 	// Switch to Findings tab.
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlPgDown})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	// FindingsNotRun — no analyzers run yet.
 	view := model.View()
@@ -1178,13 +1185,13 @@ func TestReviewScreenRenderFindingsContentEmpty(t *testing.T) {
 	})
 	// The screen shows the stored review: the findings appear with the
 	// reload that follows the operation (#399).
-	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+	updated, _ = updated.Update(reviewLoadedMsg{review: &domain.Review{
 		PackageName:    "yay",
 		Status:         domain.ReviewPending,
 		FindingsStatus: domain.FindingsRun,
 		Findings:       []domain.Finding{},
 	}})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	view := model.View()
 	if !strings.Contains(view, "No findings.") {
@@ -1219,7 +1226,7 @@ func TestReviewScreenRenderFindingsContentWithFindings(t *testing.T) {
 	})
 	// The screen shows the stored review: the findings appear with the
 	// reload that follows the operation (#399).
-	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+	updated, _ = updated.Update(reviewLoadedMsg{review: &domain.Review{
 		PackageName:    "yay",
 		Status:         domain.ReviewPending,
 		FindingsStatus: domain.FindingsRun,
@@ -1228,7 +1235,7 @@ func TestReviewScreenRenderFindingsContentWithFindings(t *testing.T) {
 			{Category: "version_bump", Summary: "Version bump"},
 		},
 	}})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	view := model.View()
 	if !strings.Contains(view, "Findings:") {
@@ -1265,13 +1272,13 @@ func TestReviewScreenOperationCompletedMsgSwitchesToFindingsOnAnalyzerSuccess(t 
 	})
 	// The screen reloads the stored review after the operation (#399);
 	// the tab switches when that reload arrives.
-	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{review: &domain.Review{
+	updated, _ = updated.Update(reviewLoadedMsg{review: &domain.Review{
 		PackageName:    "yay",
 		Status:         domain.ReviewPending,
 		FindingsStatus: domain.FindingsRun,
 		Findings:       []domain.Finding{},
 	}})
-	screen := updated.(ReviewScreen)
+	screen := updated
 
 	if got := screen.tabs.Active().Label; got != "Findings" {
 		t.Fatalf("active tab after analyzer success = %q, want Findings", got)
@@ -1295,7 +1302,7 @@ func TestReviewScreenOperationCompletedMsgNoSwitchOnFailure(t *testing.T) {
 		Err:      fmt.Errorf("analyzer failed"),
 		TraceCtx: context.Background(),
 	})
-	screen := updated.(ReviewScreen)
+	screen := updated
 
 	if got := screen.tabs.Active().Label; got != "Diff" {
 		t.Fatalf("active tab after failure = %q, want Diff (no switch)", got)
@@ -1322,7 +1329,7 @@ func TestReviewScreenOperationCompletedMsgNoSwitchOnUnrelatedOp(t *testing.T) {
 			FindingsStatus: domain.FindingsRun,
 		},
 	})
-	screen := updated.(ReviewScreen)
+	screen := updated
 
 	if got := screen.tabs.Active().Label; got != "Diff" {
 		t.Fatalf("active tab after unrelated completion = %q, want Diff (no switch)", got)
@@ -1341,7 +1348,7 @@ func TestReviewScreenOperationFailedMsgClearsLoading(t *testing.T) {
 		Err:      fmt.Errorf("build failed"),
 		TraceCtx: context.Background(),
 	})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.loading {
 		t.Fatal("loading should be false after OperationFailedMsg with matching OpID")
 	}
@@ -1368,7 +1375,7 @@ func TestReviewScreenOperationFailedMsgMismatchedOpID(t *testing.T) {
 		Err:      fmt.Errorf("unrelated failure"),
 		TraceCtx: context.Background(),
 	})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if !screen.loading {
 		t.Fatal("loading should remain true when OpID does not match pkgName")
 	}
@@ -1389,7 +1396,7 @@ func TestReviewScreenOperationCompletedMsgMismatchedOpID(t *testing.T) {
 		OpID:   "different-pkg",
 		Result: &domain.Review{PackageName: "different-pkg"},
 	})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if !screen.loading {
 		t.Fatal("loading should remain true when OpID does not match pkgName")
 	}
@@ -1414,7 +1421,7 @@ func TestReviewScreenOperationFailedMsgMismatchedOpIDNoPanic(t *testing.T) {
 		Err:      fmt.Errorf("unrelated failure"),
 		TraceCtx: context.Background(),
 	})
-	screen := updated.(ReviewScreen)
+	screen := updated
 	if screen.review != originalReview {
 		t.Fatal("review should be unchanged when OpID does not match")
 	}
@@ -1485,7 +1492,7 @@ func TestReviewScreenOperationCompletedMsgReloadsAndClearsLoading(t *testing.T) 
 			originalReview := model.review
 
 			updated, cmd := model.Update(tt.msg)
-			screen := updated.(ReviewScreen)
+			screen := updated
 
 			if screen.loading != tt.wantLoading {
 				t.Errorf("loading = %v, want %v", screen.loading, tt.wantLoading)
@@ -1525,7 +1532,7 @@ func TestReviewScreenBackFromAnalyzedReviewSetsChangedTrue(t *testing.T) {
 			FindingsStatus: domain.FindingsRun,
 		},
 	})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	// Press Back (Esc).
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -1573,9 +1580,9 @@ func TestReviewScreenBackFromApprovedReviewSetsChangedTrue(t *testing.T) {
 
 	var cmd tea.Cmd
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 	if cmd == nil {
 		t.Fatal("approve with empty notes should save review")
 	}

@@ -179,6 +179,20 @@ func TestRepositoryPath(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "dot names the root itself: error (#493)",
+			pkgName: ".",
+			root:    "/tmp/ws",
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "dot inside a name is fine",
+			pkgName: "python-foo.bar",
+			root:    "/tmp/ws",
+			want:    "/tmp/ws/python-foo.bar",
+			wantErr: false,
+		},
+		{
 			name:    "double-dot in middle returns error",
 			pkgName: "foo/../bar",
 			root:    "/tmp/ws",

@@ -52,7 +52,7 @@ func (s *ReviewStore) Save(pkgName domain.PackageName, review *domain.Review) er
 	}
 
 	dir := s.paths.PackageDir(pkgName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create review directory %s: %w", dir, err)
 	}
 
@@ -62,7 +62,7 @@ func (s *ReviewStore) Save(pkgName domain.PackageName, review *domain.Review) er
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(s.paths.ReviewPath(pkgName), data, 0o644); err != nil {
+	if err := os.WriteFile(s.paths.ReviewPath(pkgName), data, 0o600); err != nil {
 		return fmt.Errorf("write review for %s: %w", pkgName, err)
 	}
 	return nil

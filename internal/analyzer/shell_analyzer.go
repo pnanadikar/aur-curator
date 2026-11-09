@@ -130,8 +130,30 @@ func (a *shellAnalyzer) Run(ctx context.Context, diff *git.GitDiff) ([]domain.Fi
 	return findings, nil
 }
 
-// scanLine checks one added line against both pattern sets.
+// commentLabel is the summary label of a match on a line starting with #.
+const commentLabel = "Comment line (runs only inside a string or heredoc)"
+
+// scanLine checks one added line against both pattern sets. A line whose
+// first non-blank character is # gives at most one finding,
+// shell_in_comment (Low), in place of the others: usually a comment, but
+// inside a multi-line double-quoted string or an unquoted heredoc bash
+// runs its $(...) and backticks, so the match is kept rather than skipped
+// (analyzer-specs.md § Comment Lines, #494).
 func scanLine(analyzerName, line, path string, lineNo int) []domain.Finding {
+	if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+		for _, rule := range shellRules {
+			if rule.re.MatchString(line) {
+				return []domain.Finding{{
+					Analyzer: analyzerName,
+					Category: CategoryShellInComment,
+					Summary:  fmt.Sprintf("%s: %s", commentLabel, line),
+					Location: location(path, lineNo),
+				}}
+			}
+		}
+		return nil
+	}
+
 	var findings []domain.Finding
 
 	seen := map[string]bool{}

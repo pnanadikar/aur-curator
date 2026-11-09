@@ -1,6 +1,6 @@
 # Review Screen Implementation Guide
 
-> Last updated: 2026-10-01
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: tui-review.md (visual intent), developer-guide.md, workflow.md
 >
@@ -140,8 +140,8 @@ Owned by `ReviewScreen` (`m.modal`, `m.modalFlow`), not the root model.
 
 **Approve** (`modalApprove`) — opens on every Approve:
 
-- First line by findings state: not run → "No analyzers have been run for
-  this review. Approve anyway?"; run with 0 → "There are 0 findings,
+- First line by findings state: not run → three fixed lines naming the
+  checks skipped, then a blank line (`tui-review.md` § Approve, #495); run with 0 → "There are 0 findings,
   approve?"; run with N → the `findingsSummary()` line, then "Approve?".
   Always one line plus prompt: the modal cannot scroll.
 - Input labelled "Reviewer notes (optional):", starting blank and focused.

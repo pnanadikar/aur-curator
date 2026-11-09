@@ -44,12 +44,12 @@ const (
 // append must not crash the application or block UI flow.
 func Log(ctx context.Context, workspaceRoot, source, message string) error {
 	dir := filepath.Join(workspaceRoot, errorsDir)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
 	path := filepath.Join(dir, errorsFile)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
@@ -62,7 +62,7 @@ func Log(ctx context.Context, workspaceRoot, source, message string) error {
 		_, err = fmt.Fprintf(f, "%s [%s] %s\n", ts, source, message)
 	}
 	if err != nil {
-		f.Close() //nolint:errcheck // best-effort; already returning write error
+		f.Close() //nolint:errcheck,gosec // best-effort; already returning write error
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 

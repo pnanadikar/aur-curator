@@ -12,7 +12,7 @@ PREFIX ?= $(HOME)/.local
 VERSION := $(shell git describe --tags --match 'v[0-9]*' --dirty --always)
 VERSION_LDFLAG := -X 'github.com/pramod/aur-curator/internal/version.Version=$(VERSION)'
 
-.PHONY: help build debug-build install uninstall test-build test-ui test test-race lint tracecheck vet vet-all run fmt clean release
+.PHONY: help build debug-build install uninstall test-build test-ui test test-race lint tracecheck vuln vet vet-all run fmt clean release
 
 help:
 	@printf '%s\n' \
@@ -25,14 +25,15 @@ help:
 		'  test-ui      Run go test ./internal/ui/... -v' \
 		'  test         Run go test ./...' \
 		'  test-race    Run go test -race ./... (needs cgo: gcc from base-devel)' \
-		'  lint         Run tracecheck, then golangci-lint run ./...' \
+		'  lint         Run tracecheck, then golangci-lint run ./... (gosec included)' \
 		'  tracecheck   Report trace.Log, activitylog.Log and procgroup.Run calls with unpaired key/value args' \
+		'  vuln         Run govulncheck (pinned) over ./...; needs the network' \
 		'  vet          Run go vet ./...' \
 		'  vet-all      Run vet, build and test' \
 		'  run          Run the app; pass CONFIG=/path/to/aur-curator.jsonc' \
 		'  fmt          Run gofmt across cmd/, internal/ and tools/' \
 		'  clean        Remove built artifacts in $(BIN_DIR)/' \
-		'  release      Tag main as RELEASE=vX.Y.Z, push the tag, build, check and install' \
+		'  release      Test, vuln, tag main as RELEASE=vX.Y.Z, push the tag, build, check and install' \
 		'' \
 		'Version: $(VERSION)'
 
@@ -69,6 +70,12 @@ lint: tracecheck
 tracecheck:
 	go run ./tools/tracecheck .
 
+# vuln reports known vulnerabilities in code aur-curator calls
+# (DEVELOPMENT.md § Releases, #493). Pinned so the result does not change
+# with the tool; make release runs it before tagging.
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
 vet:
 	go vet ./...
 
@@ -89,8 +96,9 @@ clean:
 
 # release tags main as $(RELEASE), pushes the tag to Gitea (origin), then
 # builds, checks the version and installs (DEVELOPMENT.md § Releases,
-# #464). Every check runs before anything is tagged. Builds and installs
-# run in sub-makes, so VERSION is read again after the tag exists.
+# #464). Every check runs before anything is tagged, make test and make
+# vuln (#493) included. Builds and installs run in sub-makes, so VERSION
+# is read again after the tag exists.
 release:
 	@set -e; \
 	r='$(RELEASE)'; \
@@ -106,6 +114,7 @@ release:
 	! git rev-parse --quiet --verify "refs/tags/$$r" >/dev/null || fail "tag $$r already exists locally"; \
 	[ -z "$$(git ls-remote --tags origin "refs/tags/$$r")" ] || fail "tag $$r already exists on origin"; \
 	$(MAKE) test || fail "tests failed; nothing was tagged"; \
+	$(MAKE) vuln || fail "govulncheck reports a vulnerability, or could not run; nothing was tagged (DEVELOPMENT.md § Releases)"; \
 	git tag -a "$$r" -m "$$r"; \
 	git push origin "$$r" \
 		|| fail "pushing the tag failed; it exists only locally: retry with git push origin $$r, or remove it with git tag -d $$r"; \

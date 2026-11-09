@@ -97,7 +97,7 @@ func (p *impl) Publish(ctx context.Context, pkgName string) error {
 
 	// Ensure repo.Location exists.
 	repoPath := p.repo.Location
-	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+	if err := os.MkdirAll(repoPath, 0o755); err != nil { //nolint:gosec // pacman and any web server read the repository (#480)
 		return fmt.Errorf("publish: mkdir repo %s: %w", repoPath, err)
 	}
 
@@ -132,7 +132,7 @@ func (p *impl) Publish(ctx context.Context, pkgName string) error {
 	trace.Log(ctx, "publish", "repo", "db", "path", repoDB)
 
 	// Invoke repo-add against the paths inside repo.Location.
-	cmd := exec.CommandContext(ctx, p.repoAdd, append([]string{repoDB}, dstPaths...)...)
+	cmd := exec.CommandContext(ctx, p.repoAdd, append([]string{repoDB}, dstPaths...)...) //nolint:gosec // repo-add itself; the paths are files Publish placed in the repository
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return p.undo(ctx, pkgName, &files, fmt.Errorf("publish: repo-add failed (%s): %s", cmd.String(), string(output)))
@@ -367,12 +367,14 @@ func ensureMode(path string) error {
 
 // copyFile copies the file at src to dst. Both paths must be in the same
 // filesystem (no cross-device link handling — callers ensure this).
+// A dst that exists keeps its mode; a new one is created 0600. The caller
+// sets the published mode (repoFileMode, #480).
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", src, err)
 	}
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", dst, err)
 	}
 	return nil

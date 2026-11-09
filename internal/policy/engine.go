@@ -24,17 +24,19 @@ type Engine interface {
 // (docs/domain/risk-analysis.md § Categories). Every analyzer.Categories
 // entry must be here; TestEveryAnalyzerCategoryMapped enforces it (#475).
 var defaultSeverity = map[string]domain.Severity{
-	analyzer.CategoryURLNew:          domain.SeverityHigh,
-	analyzer.CategoryPGPRemoved:      domain.SeverityHigh,
-	analyzer.CategoryChecksumRemoved: domain.SeverityHigh,
-	analyzer.CategoryShellExec:       domain.SeverityHigh,
-	analyzer.CategoryNetworkDownload: domain.SeverityHigh,
-	analyzer.CategoryArrayUnreadable: domain.SeverityHigh,
-	analyzer.CategoryInstallChanged:  domain.SeverityMedium,
-	analyzer.CategoryPGPKeyChanged:   domain.SeverityMedium,
-	analyzer.CategoryDependsAdded:    domain.SeverityMedium,
-	analyzer.CategoryChecksumRefresh: domain.SeverityLow,
-	analyzer.CategoryVersionBump:     domain.SeverityLow,
+	analyzer.CategoryURLNew:            domain.SeverityHigh,
+	analyzer.CategoryPGPRemoved:        domain.SeverityHigh,
+	analyzer.CategoryChecksumRemoved:   domain.SeverityHigh,
+	analyzer.CategoryShellExec:         domain.SeverityHigh,
+	analyzer.CategoryNetworkDownload:   domain.SeverityHigh,
+	analyzer.CategoryShellInComment:    domain.SeverityLow,
+	analyzer.CategoryArrayUnreadable:   domain.SeverityHigh,
+	analyzer.CategoryInstallChanged:    domain.SeverityMedium,
+	analyzer.CategoryPGPKeyChanged:     domain.SeverityMedium,
+	analyzer.CategoryDependsAdded:      domain.SeverityMedium,
+	analyzer.CategoryMaintainerChanged: domain.SeverityMedium,
+	analyzer.CategoryChecksumRefresh:   domain.SeverityLow,
+	analyzer.CategoryVersionBump:       domain.SeverityLow,
 }
 
 // DefaultEngine is Engine's sole implementation for now, holding the

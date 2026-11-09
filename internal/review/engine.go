@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pramod/aur-curator/internal/analyzer"
+	"github.com/pramod/aur-curator/internal/aurinfo"
 	"github.com/pramod/aur-curator/internal/domain"
 	"github.com/pramod/aur-curator/internal/git"
 	"github.com/pramod/aur-curator/internal/policy"
@@ -46,6 +47,23 @@ type Engine struct {
 	reviews   domain.ReviewStore
 	analyzers analyzer.Manager
 	policy    policy.Engine
+	aur       AURLookup
+}
+
+// AURLookup reads a package's record from the AUR (aurinfo.Client).
+type AURLookup interface {
+	Lookup(ctx context.Context, pkg domain.PackageName) (aurinfo.Record, error)
+}
+
+// Option configures an Engine.
+type Option func(*Engine)
+
+// WithAURLookup makes RunAnalyzers read the package's AUR record and
+// compare its maintainer with the last recorded one (domain.md § AUR
+// Record, #495). Without it the AUR check does not run; the application
+// always sets it (deps), tests that are not about the AUR leave it out.
+func WithAURLookup(l AURLookup) Option {
+	return func(e *Engine) { e.aur = l }
 }
 
 // NewEngine constructs a Review Engine.
@@ -54,19 +72,26 @@ func NewEngine(
 	reviewStore domain.ReviewStore,
 	analyzers analyzer.Manager,
 	policyEngine policy.Engine,
+	opts ...Option,
 ) *Engine {
-	return &Engine{
+	e := &Engine{
 		git:       gitProvider,
 		reviews:   reviewStore,
 		analyzers: analyzers,
 		policy:    policyEngine,
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // newPendingReview builds a new Pending Review from a live diff. The diff's
 // base and upstream commits become the review's stored range (domain.md
-// § Reviewed Range, #387); every review is created here.
-func (e *Engine) newPendingReview(pkgName domain.PackageName, diff *git.GitDiff) *domain.Review {
+// § Reviewed Range, #387); every review is created here. replaced is the
+// review it replaces, nil if none: the new review carries its AUR record
+// forward (priorAUR, #495).
+func (e *Engine) newPendingReview(pkgName domain.PackageName, diff *git.GitDiff, replaced *domain.Review) *domain.Review {
 	return &domain.Review{
 		ID:             domain.ReviewID(fmt.Sprintf("%s@%s", pkgName, diff.UpstreamCommit)),
 		PackageName:    pkgName,
@@ -75,7 +100,25 @@ func (e *Engine) newPendingReview(pkgName domain.PackageName, diff *git.GitDiff)
 		Status:         domain.ReviewPending,
 		FindingsStatus: domain.FindingsNotRun,
 		Findings:       nil,
+		PriorAUR:       priorAUR(replaced),
 	}
+}
+
+// priorAUR is the AUR record a new review compares against, taken from
+// the review it replaces (domain.md § AUR Record, #495): that review's
+// own record if it was decided and has one, otherwise the record it
+// carried. A review approved without analysis has none and passes the
+// older one on; so does a Pending review replaced before any decision,
+// since an undecided analysis is not a decided record. nil when there is
+// no earlier review.
+func priorAUR(replaced *domain.Review) *domain.AURRecord {
+	if replaced == nil {
+		return nil
+	}
+	if replaced.Status != domain.ReviewPending && replaced.AUR != nil {
+		return replaced.AUR
+	}
+	return replaced.PriorAUR
 }
 
 // EnsureReview returns the current Review for pkgName, creating a new
@@ -101,7 +144,7 @@ func (e *Engine) EnsureReview(ctx context.Context, pkgName domain.PackageName) (
 		return nil, err
 	}
 
-	r := e.newPendingReview(pkgName, diff)
+	r := e.newPendingReview(pkgName, diff, nil)
 
 	if err := e.reviews.Save(pkgName, r); err != nil {
 		return nil, err
@@ -130,13 +173,13 @@ func (e *Engine) InitiateReview(ctx context.Context, pkgName domain.PackageName)
 		}
 
 	case errors.Is(err, domain.ErrNotFound):
-		// create below
+		// create below; current is nil
 
 	default:
 		return nil, err
 	}
 
-	r := e.newPendingReview(pkgName, diff)
+	r := e.newPendingReview(pkgName, diff, current)
 
 	if err := e.reviews.Save(pkgName, r); err != nil {
 		return nil, err
@@ -192,6 +235,16 @@ func (e *Engine) RunAnalyzers(ctx context.Context, pkgName domain.PackageName, e
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("analysis of %s not saved: %w", pkgName, err)
+	}
+
+	// The AUR check (#495). A failed read is recorded on the review and
+	// never fails the analysis: an AUR outage must not block every review.
+	// A cancel still saves nothing.
+	if e.aur != nil {
+		findings = append(findings, e.checkAUR(ctx, r)...)
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("analysis of %s not saved: %w", pkgName, err)
+		}
 	}
 
 	for i := range findings {

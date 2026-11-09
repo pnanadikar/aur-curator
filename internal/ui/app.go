@@ -18,6 +18,7 @@ import (
 	"github.com/pramod/aur-curator/internal/git"
 	"github.com/pramod/aur-curator/internal/overlay"
 	"github.com/pramod/aur-curator/internal/review"
+	"github.com/pramod/aur-curator/internal/sanitize"
 	"github.com/pramod/aur-curator/internal/theme"
 	"github.com/pramod/aur-curator/internal/trace"
 	"github.com/pramod/aur-curator/internal/ui/msgs"
@@ -114,6 +115,23 @@ func (a App) WithStartupNotice(text string) App {
 	return a
 }
 
+// toolDone reports a diff tool or pager that failed (#488): the toast
+// gives the last line of its stderr, or the error, and the error log the
+// whole of both. A tool that exited cleanly needs nothing.
+func (a App) toolDone(msg msgs.ToolDoneMsg) (tea.Model, tea.Cmd) {
+	if msg.Err == nil {
+		return a, nil
+	}
+	stderr := strings.TrimSpace(msg.Stderr)
+	_ = errorlog.Log(context.Background(), a.deps.Config.RootPath, "tool",
+		sanitize.ForMessage(fmt.Sprintf("%s for %q: %v: %s", msg.What, msg.Pkg, msg.Err, stderr)))
+	reason := msg.Err.Error()
+	if i := strings.LastIndex(stderr, "\n"); stderr != "" {
+		reason = stderr[i+1:]
+	}
+	return a.setToast(sanitize.ForMessage(msg.What + " failed: " + reason))
+}
+
 // startupNoticeCmd emits the startup notice as a ToastMsg, or nil if there
 // is none.
 func (a App) startupNoticeCmd() tea.Cmd {
@@ -183,8 +201,8 @@ func (a App) syncScreenSize() (App, tea.Cmd) {
 	// Review is constructed lazily on first navigation; a zero-value
 	// ReviewScreen must not receive a size.
 	if a.review.Package() != "" {
-		r, rc := a.review.Update(size)
-		a.review = r.(screens.ReviewScreen)
+		var rc tea.Cmd
+		a.review, rc = a.review.Update(size)
 		cmds = append(cmds, rc)
 	}
 	return a, tea.Batch(cmds...)
@@ -247,6 +265,8 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case msgs.ToastMsg:
 		return a.setToast(msg.Text)
+	case msgs.ToolDoneMsg:
+		return a.toolDone(msg)
 	case startupNoticeMsg:
 		return a.setToastFor(msg.text, startupNoticeDuration)
 	case clearToastMsg:
@@ -459,9 +479,7 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.detail = dt
 		var rv screens.ReviewScreen
-		var rvModel tea.Model
-		rvModel, c = a.review.Update(msg)
-		rv = rvModel.(screens.ReviewScreen)
+		rv, c = a.review.Update(msg)
 		if c != nil {
 			cmds = append(cmds, c)
 		}
@@ -491,9 +509,7 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msgs.ScreenPackageDetail:
 			a.detail, cmd = a.detail.Update(msg)
 		case msgs.ScreenReview:
-			r, c := a.review.Update(msg)
-			a.review = r.(screens.ReviewScreen)
-			cmd = c
+			a.review, cmd = a.review.Update(msg)
 		case msgs.ScreenRepositoryStatus:
 			a.repoStatus, cmd = a.repoStatus.Update(msg)
 		case msgs.ScreenSettings:
@@ -676,9 +692,7 @@ func (a App) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		a.help, cmd = a.help.Update(a.screenWindowSizeMsg())
 	case msgs.ScreenReview:
 		debug.Logf("app", "  -> review.Update(WindowSizeMsg, content W=%d H=%d)", msg.Width, max(a.height-a.topHeight()-a.bottomHeight(), 0))
-		r, c := a.review.Update(a.screenWindowSizeMsg())
-		a.review = r.(screens.ReviewScreen)
-		cmd = c
+		a.review, cmd = a.review.Update(a.screenWindowSizeMsg())
 	}
 	return a, cmd
 }
@@ -775,8 +789,7 @@ func (a App) handleNavigate(msg msgs.NavigateMsg) (tea.Model, tea.Cmd) {
 		} else {
 			a.review = a.review.Refresh()
 		}
-		r, _ := a.review.Update(a.screenWindowSizeMsg())
-		a.review = r.(screens.ReviewScreen)
+		a.review, _ = a.review.Update(a.screenWindowSizeMsg())
 		return a, a.review.Init()
 	case msgs.ScreenRepositoryStatus:
 		a.repoStatus, _ = a.repoStatus.Update(a.screenWindowSizeMsg())

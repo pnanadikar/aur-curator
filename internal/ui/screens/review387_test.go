@@ -73,8 +73,8 @@ func TestLoadReviewUsesStoredRange387(t *testing.T) {
 	}
 
 	updated, _ := screen.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	updated, _ = updated.(ReviewScreen).Update(msg)
-	view := updated.(ReviewScreen).View()
+	updated, _ = updated.Update(msg)
+	view := updated.View()
 	if !strings.Contains(view, "Reviewing: base123 → up76543") {
 		t.Fatalf("summary does not show the stored range; got:\n%s", view)
 	}
@@ -109,11 +109,11 @@ func TestEmptyRangeText387(t *testing.T) {
 
 	screen, _ := newScreen387(t, &domain.Review{PackageName: "yay", Status: domain.ReviewPending})
 	updated, _ := screen.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	updated, _ = updated.(ReviewScreen).Update(reviewLoadedMsg{
+	updated, _ = updated.Update(reviewLoadedMsg{
 		diff:   git.GitDiff{BaseCommit: "base1234567", UpstreamCommit: "base1234567"},
 		review: &domain.Review{PackageName: "yay", Status: domain.ReviewPending, FindingsStatus: domain.FindingsNotRun},
 	})
-	view := updated.(ReviewScreen).View()
+	view := updated.View()
 	if !strings.Contains(view, "No changes in the reviewed range.") {
 		t.Fatalf("empty range text missing; got:\n%s", view)
 	}

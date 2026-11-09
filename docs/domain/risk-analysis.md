@@ -1,6 +1,6 @@
 # Risk Analysis
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: domain.md, interfaces.md, analyzer-specs.md
 
@@ -36,10 +36,12 @@ narrow enough that it never legitimately belongs to two tiers.
 | `checksum_removed` | High | Checksum analyzer | checksum verification removed or weakened (`SKIP` where a real checksum existed) |
 | `shell_exec` | High | Shell analyzer | new shell execution in `PKGBUILD` or `.install` |
 | `network_download` | High | Shell analyzer | network access from `PKGBUILD` or `.install` code rather than through `source=()` |
+| `shell_in_comment` | Low | Shell analyzer | a `shell_exec` or `network_download` pattern on a line starting with `#`: usually a comment, but it runs inside a multi-line string or unquoted heredoc (`analyzer-specs.md` § Comment Lines, #494) |
 | `array_unreadable` | High | Pkgbuild analyzer | an array the analyzers read (`source`, checksums, `validpgpkeys`, dependencies) could not be parsed, so no check covered it (#484) |
 | `install_changed` | Medium | Shell analyzer | a `.install` scriptlet added or changed (it runs as root at install time) |
 | `pgp_key_changed` | Medium | Checksum analyzer | a key added to `validpgpkeys`, with or without one removed |
 | `depends_added` | Medium | Depends analyzer | an entry added to `depends`, `makedepends`, `checkdepends` or `optdepends` |
+| `maintainer_changed` | Medium | Review engine (AUR record, `domain.md` § AUR Record) | the AUR maintainer or co-maintainers differ from the last recorded review's: a new maintainer, orphaned, adopted, or a co-maintainer added or removed (#495). Medium, not High: a legitimate adoption looks the same as a hostile one |
 | `checksum_refresh` | Low | Checksum analyzer | checksums changed with the sources |
 | `version_bump` | Low | Checksum analyzer | `pkgver`/`pkgrel` changed |
 
@@ -85,12 +87,12 @@ only when an analyzer is written for them.
 
 | Risk | Intended severity |
 | --- | --- |
-| maintainer change | Medium |
 | added patches | Medium |
 | documentation-only changes | Low |
 
 New dependencies and `.install` changes have categories since #476
-(§ Categories), which made Medium reachable (#23).
+(§ Categories), which made Medium reachable (#23). A maintainer change
+has one since #495 (`maintainer_changed`).
 
 ## Severity Over Time
 

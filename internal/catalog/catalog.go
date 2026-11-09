@@ -74,7 +74,8 @@ func (c *FilesystemCatalog) RepositoryPath(name domain.PackageName) (string, err
 	if raw == "" {
 		return "", fmt.Errorf("catalog: package name is empty")
 	}
-	if strings.ContainsRune(raw, filepath.Separator) || strings.Contains(raw, "..") {
+	// "." would name rootPath itself: remove would delete the workspace (#493).
+	if raw == "." || strings.ContainsRune(raw, filepath.Separator) || strings.Contains(raw, "..") {
 		return "", fmt.Errorf("catalog: invalid package name %q", raw)
 	}
 	return filepath.Join(c.rootPath, raw), nil

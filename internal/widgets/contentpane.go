@@ -11,6 +11,7 @@ import (
 // or any other content domain.
 type ContentPane struct {
 	viewport viewport.Model
+	content  string // as last set; see Content
 }
 
 // NewContentPane constructs a ContentPane with a ready-to-use viewport.
@@ -29,7 +30,14 @@ func (c *ContentPane) SetSize(width, height int) {
 // SetContent replaces the viewport's rendered text content.
 // content is expected to already be styled (e.g. via theme styles).
 func (c *ContentPane) SetContent(content string) {
+	c.content = content
 	c.viewport.SetContent(content)
+}
+
+// Content returns the whole content as last set, styled, not just the
+// part in view (the pager key, #488).
+func (c ContentPane) Content() string {
+	return c.content
 }
 
 // Update processes scroll keys for the viewport.

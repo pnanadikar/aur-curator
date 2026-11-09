@@ -59,6 +59,11 @@ type ReviewScreen struct {
 	prevTabKey key.Binding
 	backKey    key.Binding
 	analyzeKey key.Binding
+	// difftoolKey opens the active tab's files in the user's diff tool
+	// (tui-review.md § Your Own Tools, #488).
+	difftoolKey key.Binding
+	// viewKey opens the active tab's content in the pager (#488).
+	viewKey key.Binding
 	// scrollKey scrolls the active tab's content pane.
 	scrollKey key.Binding
 	// lineUpKey and lineDownKey scroll the active tab's pane by one line
@@ -129,6 +134,14 @@ func NewReviewScreen(pkgName domain.PackageName, gitProvider git.Provider, store
 			key.WithKeys("a"),
 			key.WithHelp("a", "Run Analyzers"),
 		),
+		difftoolKey: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("d", "Diff tool"),
+		),
+		viewKey: key.NewBinding(
+			key.WithKeys("v"),
+			key.WithHelp("v", "View"),
+		),
 		scrollKey: key.NewBinding(
 			key.WithKeys("pgup", "pgdown"),
 			key.WithHelp("pgup/pgdown", "Scroll diff"),
@@ -162,7 +175,7 @@ func (m ReviewScreen) Init() tea.Cmd {
 }
 
 // Update processes Bubble Tea messages for the review screen.
-func (m ReviewScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m ReviewScreen) Update(msg tea.Msg) (ReviewScreen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -353,6 +366,20 @@ func (m ReviewScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.runAnalyzersCmd()
 		}
+
+		if key.Matches(keyMsg, m.difftoolKey) {
+			if !m.difftoolEnabled() {
+				return m, nil
+			}
+			return m, m.openDifftool()
+		}
+
+		if key.Matches(keyMsg, m.viewKey) {
+			if m.viewContent() == "" {
+				return m, nil
+			}
+			return m, m.openView()
+		}
 		// Only pgup/pgdown are forwarded to the viewport: its Update also
 		// acts on f, b, d, u, space, h and l. The line keys call the pane
 		// directly for the same reason (#471).
@@ -506,6 +533,8 @@ func (m ReviewScreen) actions() []widgets.Action {
 		{Key: "a", Label: "Run Analyzers", Enabled: pending, Reason: prereqPendingReview},
 		{Key: "ENTER", Label: "Approve", Enabled: pending, Reason: prereqPendingReview},
 		{Key: "^X", Label: "Reject", Enabled: pending, Reason: prereqPendingReview},
+		{Key: "d", Label: "Diff tool", Enabled: m.difftoolEnabled(), Reason: reasonNoDiffTab},
+		{Key: "v", Label: "View", Enabled: m.viewContent() != "", Reason: reasonNothingToView},
 		{Key: "Esc", Label: "Back", Enabled: true},
 	}
 }
@@ -570,6 +599,9 @@ func (m ReviewScreen) renderFindingsContent() string {
 	if cats := unmappedCategories(p, m.review.Findings); len(cats) > 0 {
 		note = theme.ErrorStyle().Render(strings.Join(inconsistencyLines(cats), "\n")) + "\n\n" + note
 	}
+	if aur := renderAURLines(m.review); aur != "" {
+		note += "\n\n" + aur
+	}
 
 	if len(m.review.Findings) == 0 {
 		return note + "\n\n" + theme.SubtleStyle().Render("No findings.")
@@ -619,14 +651,16 @@ func (m ReviewScreen) renderFindingsContent() string {
 			severityStr = "LOW"
 			severityStyle = theme.SubtleStyle().Foreground(lipgloss.Color("112"))
 		}
+		// Summary and Location hold the maintainer's text: escaped, never
+		// raw (#491).
 		fmt.Fprintf(&b, "%*d/%d [%s] %s: %s\n",
 			digits, i+1, len(sorted),
 			severityStyle.Render(severityStr),
 			theme.SubtleStyle().Render(f.Analyzer),
-			expandTabs(f.Summary),
+			theme.RenderEscaped(expandTabs(f.Summary), lipgloss.NewStyle()),
 		)
 		if f.Location != "" {
-			fmt.Fprintf(&b, "%s%s\n", indent, theme.DimmedStyle().Render(f.Location))
+			fmt.Fprintf(&b, "%s%s\n", indent, theme.RenderEscaped(f.Location, theme.DimmedStyle()))
 		}
 	}
 	return b.String()

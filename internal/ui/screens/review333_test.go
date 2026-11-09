@@ -28,11 +28,11 @@ func TestReviewHelpToggle(t *testing.T) {
 	model, _ := newTestReviewScreen(t)
 	model, _ = loadReadyScreen(t, model)
 	upd, _ := model.Update(tea.WindowSizeMsg{Width: theme.MinScreenWidth, Height: 40})
-	model = upd.(ReviewScreen)
+	model = upd
 	closedBar := lipgloss.Height(model.renderActionBar())
 
 	upd, _ = model.Update(helpKeyMsg())
-	model = upd.(ReviewScreen)
+	model = upd
 	if !model.helpOpen {
 		t.Fatal("? did not open the help")
 	}
@@ -41,7 +41,7 @@ func TestReviewHelpToggle(t *testing.T) {
 	}
 
 	upd, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	model = upd.(ReviewScreen)
+	model = upd
 	if model.helpOpen {
 		t.Fatal("Esc did not close the help")
 	}
@@ -53,12 +53,12 @@ func TestReviewHelpToggle(t *testing.T) {
 
 	// Approve modal open: ? goes to the modal's notes input.
 	upd, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = upd.(ReviewScreen)
+	model = upd
 	if model.modal == nil {
 		t.Fatal("setup: Enter did not open the Approve modal")
 	}
 	upd, _ = model.Update(helpKeyMsg())
-	model = upd.(ReviewScreen)
+	model = upd
 	if model.helpOpen {
 		t.Fatal("? opened the help while the Approve modal was open")
 	}

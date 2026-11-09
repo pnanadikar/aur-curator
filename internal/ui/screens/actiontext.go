@@ -38,6 +38,8 @@ const (
 	reasonNoReview       = "no review"
 	reasonNoGit          = "git not configured"
 	reasonPackagesCard   = "Packages card only"
+	reasonNoDiffTab      = "open a tab with a diff"
+	reasonNothingToView  = "nothing to show"
 )
 
 // isMergeAvailable: Merge (T9) is available exactly when the package is

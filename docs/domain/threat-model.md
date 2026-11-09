@@ -1,6 +1,6 @@
 # Threat Model
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 > Status: Active (#470)
 > Companion docs: risk-analysis.md, analyzer-specs.md, workflow.md
 
@@ -25,7 +25,9 @@ downloads (the upstream project, its release host, a mirror).
 **What is trusted.** The user; the machine aur-curator runs on;
 aur-curator itself and its Go dependencies; the Arch and EndeavourOS
 repositories and their signing keys; the Gitea instance. An attacker who
-controls any of these is out of scope. Gitea is not on the build path:
+controls any of these is out of scope. The network between aur-curator
+and Gitea is not trusted: the Gitea token travels only over `https://`,
+or over `http://` to the same machine (#505). Gitea is not on the build path:
 Fetch reads from the AUR, Merge pushes to Gitea, and Build clones the
 local repository.
 
@@ -88,12 +90,14 @@ outside aur-curator's reach.
 | S2 | A source moves to an attacker's host | `url_new` (High) for every new URL in `source=()`; the reviewer checks the host | v1; automating the domain check is later (§ Later) |
 | S3 | The content at an unchanged source URL is replaced | `makepkg` verifies checksums and PGP signatures at build time; `checksum_removed` and `pgp_removed` (High) flag a weakened check | v1 |
 | S4 | A VCS package (`-git` and similar) builds whatever upstream's branch holds at build time | Review covers the PKGBUILD only; the source is unpinned (`SKIP`) and unreviewed by construction | accepted — choosing a VCS package trusts upstream's branch |
-| S5 | The package changes hands: orphan adoption, maintainer account takeover | Manual: the reviewer checks committer continuity. Git's author and committer fields are set by whoever commits, so they are weak evidence; the AUR's own maintainer record is authoritative | partial; P4 flags an added or replaced PGP key (`pgp_key_changed`, #476); the AUR maintainer record is later (§ Later) |
-| S6 | A package is malicious from its first commit (new package, typosquat) | Import reviews the whole package as added lines, so every URL and shell pattern is flagged | partial |
+| S5 | The package changes hands: orphan adoption, maintainer account takeover | Manual: the reviewer checks committer continuity. Git's author and committer fields are set by whoever commits, so they are weak evidence; the AUR's own maintainer record is authoritative | partial; P4 flags an added or replaced PGP key (`pgp_key_changed`, #476); a change of AUR maintainer or co-maintainers since the last recorded review is `maintainer_changed`, Medium (#495). An account takeover keeps the name and is not detected |
+| S6 | A package is malicious from its first commit (new package, typosquat) | Import reviews the whole package as added lines, so every URL and shell pattern is flagged; the Findings tab shows the package's first-submitted date, votes and popularity (#495), so a days-old package with no votes reads slowly | partial |
 | S7 | A dependency is installed without review | `makepkg` runs without `-s`, so a build with missing dependencies fails and the user installs them. An AUR dependency installed through an AUR helper is unreviewed | partial; P4 flags added dependencies (`depends_added`, #476); a check that AUR dependencies are curated is later (§ Later) |
 | S8 | Something other than the reviewed commit gets merged | Merge fast-forwards to `Review.UpstreamCommit`, never to the moving upstream ref; commits on local `master` that are not upstream block Merge and are shown before Build (`workflow.md` § Merge, § Local Commits Not on Upstream). A build clones the merged commit and records it; only a build of `master`'s HEAD counts (`domain.md` § Build) | v1 |
 | S9 | An AUR helper (yay) installs from the AUR without review | None inside aur-curator | accepted while packages are being migrated; removing the helper afterwards closes it |
 | S10 | The reviewer approves a hostile change anyway: a large diff, fatigue, a plausible-looking command | Findings are ranked by severity so the riskiest lines come first; the decision stays human | accepted — inherent in "never automate trust" |
+| S11 | The review screen shows something other than the file. Text the maintainer writes (diff lines, finding summaries, commit authors and subjects, the version) can hold terminal control sequences (`ESC[1A ESC[2K` erases the line above), a carriage return that prints harmless text over a command, colour that hides text, or bidi and zero-width characters that reorder or hide it (Trojan Source, CVE-2021-42574). This changes nothing makepkg runs; it defeats the review | Every control, bidi and zero-width character is shown as a visible escape in the error style (`\x1b`, `\r`, `\u202e`), never interpreted and never silently removed (`tui-review.md` § Escaped Characters). A version holding one is not readable, so it is never reported as up to date (#491) | v1.3 |
+| S12 | aur-curator itself runs with a known vulnerability: in its own Go code, a module it imports, or the Go standard library it is built with. It talks to the AUR and Gitea over HTTPS (TLS, certificate checks, HTTP/2) and parses what they return | `make lint` runs gosec on every change; every exclusion names its reason. `make vuln` (govulncheck, pinned) reports known vulnerabilities in code aur-curator calls, and `make release` runs it before tagging, so a release stops on one like on a failing test. The minimum Go is set in `go.mod` to a release with the known fixes (`DEVELOPMENT.md` § Releases, #493) | v1.3 |
 
 ### Current review practice
 
@@ -229,8 +233,9 @@ Not in the plan above, and not rejected: each waits for a reason.
 - **Dependency check** (S7): that a package's AUR dependencies are
   curated and installed, stopping with a message naming the missing ones
   (aur-curator never installs them).
-- **Provenance signals** (S2, S5, S6): the AUR's maintainer record,
-  package age and popularity, a `-bin` source off the vendor's domain.
+- **Provenance signals** (S2): a `-bin` source off the vendor's domain.
+  The AUR's maintainer record, package age and popularity are done
+  (#495, S5, S6).
 - **Repository signing** (I4): once more than one machine uses the
   repository. The signing key must stay out of the build's reach.
 

@@ -1,6 +1,6 @@
 # Domain Model: aur-curator
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: architecture.md, interfaces.md, workflow.md, risk-analysis.md
 > Code: `internal/domain`
@@ -224,6 +224,10 @@ Code: `review.go`.
 | findings | Findings produced during review (may be empty; see findingsStatus) | Stored |
 | findingsStatus | Not Run / Run — distinguishes "never analyzed" from "analyzed, zero findings" | Stored |
 | riskAssessment | Policy Engine's aggregate risk rollup, computed once when the decision is recorded — see § RiskAssessment | Stored — nil until decided, and stays nil if the review was decided without analyzers having run |
+| aur | The AUR's maintainer record as this review's analysis read it: maintainer (or orphaned), co-maintainers, when it was read, and this review's ID — see § AUR Record | Stored — nil until the analyzers run and the read succeeds; frozen at the decision, since nothing changes it after (#495) |
+| aurInfo | The package's first-submitted date, votes and popularity as the same read reported them; shown on the Findings tab, not a finding | Stored — nil when `aur` is nil (#495) |
+| aurError | Why the AUR record could not be read during analysis | Stored — empty when the read succeeded or never ran (#495) |
+| priorAur | The last recorded maintainer record from an earlier review, which this review's analysis compares against — see § AUR Record | Stored — set when the review is created; nil on a first review and on reviews that predate #495 |
 
 ### Ownership
 
@@ -284,6 +288,47 @@ Trail) — this model only forgoes retaining the *reviewer's* notes/findings/
 rationale for superseded reviews, not the fact that a review and merge
 occurred. This was a deliberate simplicity tradeoff over a fully historical
 Review log, made explicitly rather than left as a gap.
+
+One thing does survive the overwrite: the last recorded AUR maintainer
+record, carried into the new review as `priorAur` (§ AUR Record). The AUR
+reports only the current maintainer, so a change can only be detected
+against a record kept from before (#495).
+
+### AUR Record
+
+When a review's analyzers run, aur-curator reads the package's record
+from the AUR (RPC v5 `info`) and stores it on the review as `aur`: the
+maintainer, or that the package is orphaned, and the co-maintainers. The
+AUR is not read anywhere else: Approve and Reject stay offline, and
+Fetch and Import do not read it (#495).
+
+A new review gets `priorAur` when it is created, from the review it
+replaces:
+
+- that review's `aur`, if it was decided and has one;
+- otherwise that review's own `priorAur`. A review approved without
+  analysis has no `aur` and passes the older record on; so does a
+  Pending review replaced before any decision. An undecided analysis is
+  never carried;
+- nil when there is no earlier review (Import).
+
+After the analyzers, the review engine compares `priorAur` with `aur`. A
+different maintainer, orphaning, adoption, or a co-maintainer added or
+removed is a `maintainer_changed` finding (Medium), whose summary names
+both sides and the date of the record it compares against. When a review
+was approved without analysis, a change is therefore flagged at the next
+analysed review, not lost.
+
+No finding is made when either side is missing: a first review, a review
+from before #495, or a failed read. The Findings tab says which, so a
+check that did not run is never silent. A failed read does not fail the
+analysis: the analyzers' findings are saved, and `aurError` says why the
+record was not read. Cancelling the analysis saves nothing, as before.
+
+The AUR gives the current maintainer only and no history of who pushed
+which commit. A takeover of the maintainer's account (same name) is not
+detected here; `pgp_key_changed` and the diff remain the defence
+(`threat-model.md` S5).
 
 ### Review Identity
 
@@ -896,7 +941,7 @@ before it is checked or used.
 | rootPath, repositoryPath | Not empty. A leading `~` or `~/` is expanded to the home directory; the result must be absolute, and is cleaned (`filepath.Clean`) |
 | activityLogPath | When set: as above |
 | repositoryPath | Not the same as `rootPath`, and neither inside the other. The catalog treats every subdirectory of `rootPath` as a package |
-| giteaBaseURL | Not empty; parses as a URL with scheme `http` or `https` and a host |
+| giteaBaseURL | Not empty; parses as a URL with scheme `http` or `https` and a host. `http` only when the host is `localhost` or a loopback address (`127.0.0.0/8`, `::1`): every API request carries the token (§ Secret Handling, #505) |
 | giteaOrg | Not empty; no `/` |
 | giteaToken | See § Secret Handling: a blank value counts as not set |
 | repoDBName | A plain file name (no `/`) ending in `.db.tar.gz`, with a name before `.db`. `repo-add` accepts other compressions, but `internal/repodb` reads gzip only |
@@ -930,6 +975,12 @@ JSON).
    the key. Deliberate access is always through `Value()`.
 4. **No re-persistence:** the resolved value is never cached or written
    anywhere else.
+5. **Transport:** the token is sent only in the `Authorization` header of
+   Gitea API requests, so it crosses the network only over `https://`.
+   `config.Load` refuses an `http://` `giteaBaseURL` unless the host is
+   this machine (§ Validation, #505). A Gitea without TLS is reached
+   through TLS or an SSH tunnel to `localhost`; there is no switch to
+   send the token in clear.
 
 ### Ownership
 
@@ -970,6 +1021,21 @@ filesystem by Package Catalog's live scan (`interfaces.md` § Package
 Catalog) — including immediately after Import, since Import's clone puts
 the package's directory on disk (`workflow.md` § Import). "Contains many
 Packages" is a true relationship, just not a stored one.
+
+### File Modes
+
+What aur-curator creates under `.aur-curator/` (review, build and
+artifact records, persisted packages, build directories, `errors.log`,
+the instance lock), and the `--debug-log` and `--trace` files, is
+private to the user: files `0600`, directories `0750`. They hold git
+output, paths and package contents that nothing else needs to read. The
+package repository is the exception: its directory is `0755` and every
+published package `0644`, because pacman and any web server read them
+(`workflow.md` § Transition Matrix, #480).
+
+Modes are set when a file or directory is created. A file written by an
+earlier version keeps its mode; `chmod -R go-rwx <rootPath>/.aur-curator`
+tightens it (#493).
 
 ### Relationships
 

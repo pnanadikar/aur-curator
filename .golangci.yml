@@ -1,23 +1,40 @@
 version: "2"
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-  govet:
-    check-shadowing: true
-
+# Settings that never applied before #493 (v1 keys under version 2 are
+# ignored silently), and stay off:
+#   errcheck check-type-assertions: 187 of 193 hits are in tests, where
+#     a panic is a test failure; the 6 in production were removed (#493).
+#   govet shadow: 33 of 49 production hits are err; low value.
 linters:
-  disable-all: true
+  default: none
   enable:
-    - errcheck    # Checks for unhandled errors
-    - govet       # Reports suspicious constructs
-    - ineffassign # Detects unused assignments
-    - staticcheck # The "gold standard" for bugs
-    - unused      # Finds unused constants, variables, etc.
+    - errcheck    # Unhandled errors
+    - govet       # Suspicious constructs
+    - gosec       # Security problems (#493)
+    - ineffassign # Unused assignments
+    - staticcheck # Bugs and simplifications
+    - unused      # Unused constants, variables, functions
+  settings:
+    gosec:
+      excludes:
+        # File paths from variables (G304, and G703 by taint analysis):
+        # every path is the workspace layout or the user's own config.
+        # Package names are checked where they enter (#493).
+        - G304
+        - G703
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gosec]
+
+issues:
+  # Report every issue, not the first few of a kind.
+  max-issues-per-linter: 0
+  max-same-issues: 0
 
 formatters:
   enable:
-    - gofmt       # Checks that code is gofmt'd
+    - gofmt # Checks that code is gofmt'd
 
 run:
   timeout: 5m

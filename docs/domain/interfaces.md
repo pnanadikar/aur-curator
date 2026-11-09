@@ -146,8 +146,9 @@ but explicit Git error is an acceptable failure mode.
 - `Packages` errors only if the context is already cancelled or the
   workspace root itself cannot be read (missing, permission denied) —
   never because an individual package directory is malformed.
-- `RepositoryPath` errors only for a structurally invalid name: empty, or
-  containing a path separator or `..`. It never errors because a package
+- `RepositoryPath` errors only for a structurally invalid name: empty,
+  `.` (which would name the workspace root itself, #493), or containing a
+  path separator or `..`. It never errors because a package
   is not currently curated; a caller that needs to know that checks
   membership in `Packages` first.
 

@@ -59,11 +59,12 @@ func NewDependencies(
 		_ = errorlog.Log(context.Background(), cfg.RootPath, "policy",
 			fmt.Sprintf("finding category %q has no severity mapping; ranked High", category))
 	}))
-	reviewEngine := review.NewEngine(provider, reviewStore, analyzers, policyEngine)
+	aurClient := aurinfo.NewClient("https://aur.archlinux.org/rpc/", 15*time.Second, aurinfo.NewGitLocalVersionResolver(provider, reviewStore))
+	// The review engine reads the AUR record during analysis (#495).
+	reviewEngine := review.NewEngine(provider, reviewStore, analyzers, policyEngine, review.WithAURLookup(aurClient))
 
 	makepkgBuilder := build.MakepkgBuilder{}
 	buildEngine := build.NewEngine(makepkgBuilder, buildStore, artStore, provider, paths)
-	aurClient := aurinfo.NewClient("https://aur.archlinux.org/rpc/", 15*time.Second, aurinfo.NewGitLocalVersionResolver(provider, reviewStore))
 
 	return Dependencies{
 		Git:       provider,

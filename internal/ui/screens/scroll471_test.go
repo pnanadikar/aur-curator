@@ -39,7 +39,7 @@ func reviewWithLongPanes(t *testing.T) ReviewScreen {
 	model, _ := newTestReviewScreen(t)
 	model, _ = loadReadyScreen(t, model)
 	upd, _ := model.Update(tea.WindowSizeMsg{Width: theme.MinScreenWidth, Height: 40})
-	model = upd.(ReviewScreen)
+	model = upd
 	model.diffPane.SetFiles([]git.FileDiff{{Patch: manyLines(200)}})
 	model.findingsPane.SetContent(manyLines(200))
 	return model
@@ -49,7 +49,7 @@ func pressReview(t *testing.T, model ReviewScreen, keys ...tea.KeyMsg) ReviewScr
 	t.Helper()
 	for _, k := range keys {
 		upd, _ := model.Update(k)
-		model = upd.(ReviewScreen)
+		model = upd
 	}
 	return model
 }

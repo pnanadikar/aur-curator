@@ -30,10 +30,10 @@ var ErrHeld = errors.New("another aur-curator is running on this workspace")
 // the holder's PID when known. The returned release function drops the
 // lock; it is safe to skip, since the kernel releases the lock on exit.
 func Acquire(path string) (release func() error, err error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("lock dir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock %s: %w", path, err)
 	}

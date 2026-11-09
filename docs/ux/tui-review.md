@@ -8,7 +8,7 @@
 >
 > If the two documents disagree, `review.md` takes precedence.
 ---
-> Last updated: 2026-10-31
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: ui-overview.md, workflow.md, domain.md
 
@@ -116,11 +116,11 @@ the application never implies comparison against a "published version".
 
 | Tab | Content |
 | --- | --- |
-| **Diff** | PKGBUILD plus any changed file that is not `.SRCINFO`, an `.install` file or a patch (e.g. `LICENSE`, stray checksum files). Multiple files render concatenated in one scrollable pane, each with a file header line. Always enabled. If only files on the other tabs changed, it says so instead of showing nothing; if the reviewed range changes no files at all, it says that. |
+| **Diff** | PKGBUILD plus any changed file that is not `.SRCINFO`, an `.install` file or a patch (e.g. `LICENSE`, stray checksum files). Multiple files render concatenated in one scrollable pane, each with a file header line. Control, bidi and zero-width characters show as escapes (§ Escaped Characters, #491). Always enabled. If only files on the other tabs changed, it says so instead of showing nothing; if the reviewed range changes no files at all, it says that. |
 | **.SRCINFO** | Dedicated diff for `.SRCINFO`. |
 | **.install** | Dedicated diff for `*.install` files. |
 | **Patches** | Dedicated diff for patch files (`*.patch`, `*.diff`). |
-| **Findings** | Not a diff — shows analyzer output. Displays one of three explicit states: `Not Run`, `0 findings`, or `N findings`. These are distinct and never collapsed into each other — "not run" must never read as "0 findings." Once the analyzers have run, the tab's first line is the dimmed note `Findings point at changes; they are not a verdict. The diff is the review.` (#474, #484); with no findings it then says `No findings.` A finding whose category has no severity puts the § Internal Inconsistency lines, in the error style, above that note. Findings are numbered `i/N` in display order (§ Findings Format, #471). |
+| **Findings** | Not a diff — shows analyzer output. Displays one of three explicit states: `Not Run`, `0 findings`, or `N findings`. These are distinct and never collapsed into each other — "not run" must never read as "0 findings." Once the analyzers have run, the tab's first line is the dimmed note `Findings point at changes; they are not a verdict. The diff is the review.` (#474, #484), followed by the AUR lines (§ AUR Lines, #495); with no findings it then says `No findings.` A finding whose category has no severity puts the § Internal Inconsistency lines, in the error style, above that note. Findings are numbered `i/N` in display order (§ Findings Format, #471). |
 
 `.SRCINFO`, `.install` and Patches are **always shown**, and enabled only
 when this review changes a file of their kind; otherwise they are dimmed
@@ -160,7 +160,7 @@ a plain or `^`-modified key with no text-entry collision to guard against
 ### 5. Action Bar
 
 ```text
-^PgDn/^PgUp Tabs   a Run Analyzers   ENTER Approve   ^X Reject   Esc Back   ? more
+^PgDn/^PgUp Tabs  a Run Analyzers  ENTER Approve  ^X Reject  d Diff tool  v View  Esc Back  ? more
 ```
 
 Follows the Action Bar Convention (`tui-package-details.md` § Action Bar
@@ -169,6 +169,10 @@ Convention): compact bar, `?` for full help.
 `a Run Analyzers`, `ENTER Approve` and `^X Reject` require
 `Review.Status == Pending` (`workflow.md` § Action Availability);
 otherwise they render dimmed, and the full help gives the prerequisite.
+
+`d Diff tool` requires a tab that shows a diff (not Findings); `v View`
+requires content in the pane. Both are described in § Your Own Tools
+(#488).
 
 `ENTER Approve` and `^X Reject` apply to the **review as a whole** — the full
 reviewed commit range across all changed files — regardless of which tab is
@@ -188,9 +192,63 @@ a            Run Analyzers  Esc          Back           Home/End     Top/Bottom
 ENTER        Approve        ↑/↓ k/j      Scroll line    ?            Close help
 ```
 
+### AUR Lines
+
+Between the scope note and the findings, dimmed, from the fields stored
+on the review (`domain.md` § AUR Record, #495):
+
+On a first review (Import):
+
+```text
+AUR: maintainer alice; co-maintainers bob, carol
+AUR: first submitted 2025-02-01 (646 days old); 1 vote; popularity 0.00011
+AUR: maintainer not compared: no earlier record
+```
+
+On a later review with the same maintainer:
+
+```text
+AUR: maintainer alice; co-maintainers bob, carol
+AUR: maintainer unchanged since 2026-10-30
+```
+
+- First line: `AUR: maintainer <name>` (co-maintainers when there are
+  any), or `AUR: orphaned`.
+- Second line, on a first review only (Import): first submitted, age,
+  votes, popularity. The age is counted to when the record was read, so
+  the line does not change later. Popularity has three significant
+  digits: it is often far below 0.01.
+- Comparison line, when there is no `maintainer_changed` finding:
+  `maintainer unchanged since <date>`, or `maintainer not compared: no
+  earlier record`. A change is a finding instead.
+- When the read failed, one line in the error style replaces them:
+  `AUR record not read: <reason>. Maintainer not compared.`
+- Reviews from before #495 show no AUR lines.
+
+### Escaped Characters
+
+Diff lines (every tab that shows a diff), finding summaries and
+locations are written by the AUR maintainer. Any character in them that
+could make the screen show something other than the file is shown as a
+visible escape in the error style, never sent to the terminal and never
+silently removed (#491, `threat-model.md` S11):
+
+| Characters | Shown as |
+| --- | --- |
+| carriage return | `\r` |
+| other C0 control characters (ESC, BS, NUL, …), DEL, a byte that is not valid UTF-8 | `\xNN`, e.g. `\x1b` |
+| C1 control characters (U+0080–U+009F) | `\uNNNN`, e.g. `\u009b` |
+| bidi controls U+202A–U+202E, U+2066–U+2069; bidi marks U+200E, U+200F, U+061C | `\uNNNN`, e.g. `\u202e` |
+| zero-width characters U+200B–U+200D, U+2060, U+FEFF | `\uNNNN`, e.g. `\u200b` |
+
+Tab is shown as before and a newline still ends a line. Other non-ASCII
+text (é, CJK, emoji) is unchanged. A file that contains the text `\x1b`
+literally shows it in the line's own colour, so only colour tells it
+from an escape.
+
 ### Findings Format
 
-Below the scope note and the `Findings: N (…)` header, each finding is
+Below the scope note, the AUR lines and the `Findings: N (…)` header, each finding is
 one line, numbered in display order (severity, then as reported), with
 its Location, when it has one, on the next line (#471):
 
@@ -212,6 +270,44 @@ its Location, when it has one, on the next line (#471):
 
 ---
 
+## Your Own Tools
+
+Two keys hand the screen's content to the user's own tools (#488). While
+a tool runs, aur-curator is suspended: the tool has the terminal, and
+aur-curator comes back on the same tab at the same scroll position when
+the tool exits. Operations keep running but their results appear only
+afterwards, and nothing can be cancelled meanwhile.
+
+**`d` Diff tool** runs, in the package's clone,
+
+```text
+git difftool <baseCommit> <upstreamCommit> -- <each file of the active tab>
+```
+
+that is, the reviewed range (§ Reviewed Range in `domain.md`) for every
+file the tab shows, one after another, as `git difftool` does on the
+command line. The user's git configuration decides everything else: the
+tool (`diff.tool`; with none set, git tries kompare, emerge, vimdiff,
+nvimdiff) and whether git asks before each file (`difftool.prompt`). On a
+first review (Import) the old side is empty. Not available on Findings.
+
+**`v` View** writes the active pane's whole content, as the screen shows
+it but without colour, to a temporary file and opens it in `$PAGER`
+(`less -R` when unset). Control and invisible characters are therefore
+escaped as on the screen (§ Escaped Characters). On a tab that shows a
+diff the file is named `….diff`, so a pager such as `bat` highlights it;
+otherwise `….txt`. The file is private (mode 0600) and removed when the
+pager exits. The pager runs without `LESSOPEN` and `LESSCLOSE`, so
+`less` passes the file to no filter program.
+
+If git or the pager cannot run, a toast says why and the error log keeps
+git's full message. git reports its own failures (no diff tool found, a
+bad commit) but not the tool's: a tool that exits with an error leaves
+git exiting normally, unless `difftool.trustExitCode` is set.
+
+The files are untrusted text; the README (§ Reading a Review in Your Own
+Tools) says what that means for editors and pagers.
+
 ## Confirmation Flows
 
 ### Approve
@@ -222,7 +318,7 @@ three distinct messages — "not run" never reads as "0 findings":
 
 | Findings status | First line |
 | --- | --- |
-| `Not Run` | No analyzers have been run for this review. Approve anyway? |
+| `Not Run` | Three fixed lines and a blank line: `This update has not been analysed, so these checks have not run:` / `sources, checksums, PGP keys, dependencies, shell code and the` / `AUR maintainer. Approve anyway?` (#495) |
 | Run, 0 findings | There are 0 findings, approve? |
 | Run, N findings | The one-line findings summary, then `Approve?` |
 
@@ -234,12 +330,15 @@ with the number of findings.
 Below that, an optional notes input:
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│ No analyzers have been run for this review. Approve anyway?  │
-│ Reviewer notes (optional):                                   │
-│ ________________________________________________             │
-│                                          [Enter] [Esc]       │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ This update has not been analysed, so these checks have not run: │
+│ sources, checksums, PGP keys, dependencies, shell code and the   │
+│ AUR maintainer. Approve anyway?                                  │
+│                                                                  │
+│ Reviewer notes (optional):                                       │
+│ ________________________________________________                 │
+│                                           [Enter] [Esc]          │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 - Appears only at the moment Approve is pressed — not a standing banner.

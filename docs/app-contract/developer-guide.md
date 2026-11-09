@@ -1,6 +1,6 @@
 # Developer Guide: aur-curator
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: `architecture.md`, `interfaces.md`, `domain.md`,
 > `workflow.md`, `ui-overview.md`; repository root `DEVELOPMENT.md`
@@ -559,6 +559,21 @@ content that isn't what's drawn, with no compiler error.
 `fixedPartsBelowContent` (Dashboard: `fixedPartsAboveList`), used by both
 `View` and the size calculation, and `widgets.FlexHeight` turns the
 remaining height into the pane size. No hardcoded row counts.
+
+### External tools: the event loop blocks
+
+`d` and `v` (#488) run the user's diff tool or pager through
+`tea.ExecProcess`. Bubble Tea runs it inside its event loop, which blocks
+until the tool exits: messages sent meanwhile (an operation finishing)
+wait on the unbuffered message channel and are handled afterwards. None
+is lost, but no key reaches the app, so nothing can be cancelled while a
+tool is open. Do not add a feature that relies on handling messages
+during a tool's run.
+
+`ExecProcess` sends the tool's stderr to the terminal, where the redraw
+wipes it out. `runTool` sets the command's `Stderr` itself (Bubble Tea
+keeps a `Stderr` that is already set) and keeps the tail, so a failure
+reaches the toast and the error log.
 
 ### Git timeouts: one per call, recorded
 

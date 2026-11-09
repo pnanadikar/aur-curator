@@ -104,7 +104,7 @@ func (e *Engine) RunBuild(ctx context.Context, pkgName domain.PackageName) (*dom
 	buildDir := e.paths.BuildArtifactsDir(build.ID)
 	workDir := e.paths.BuildWorkDir(build.ID)
 	workspaceDir := filepath.Join(workDir, "src")
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
+	if err := os.MkdirAll(workDir, 0o750); err != nil {
 		_ = os.RemoveAll(buildDir)
 		return nil, fmt.Errorf("create build workspace: %w", err)
 	}
@@ -178,7 +178,7 @@ func (e *Engine) RunBuild(ctx context.Context, pkgName domain.PackageName) (*dom
 	// persistent directory already used for the build log so that the
 	// files survive the deferred workspace cleanup.
 	artifactPersistDir := e.paths.BuildArtifactsDir(build.ID)
-	if err := os.MkdirAll(artifactPersistDir, 0o755); err != nil {
+	if err := os.MkdirAll(artifactPersistDir, 0o750); err != nil {
 		return e.recordFailure(ctx, pkgName, build, logPath, "", oldFailureID, fmt.Errorf("create artifact persist dir %s: %w", artifactPersistDir, err))
 	}
 
@@ -250,7 +250,7 @@ func copyArtifactTo(src, dstDir string) (string, error) {
 	}
 
 	dst := filepath.Join(dstDir, srcInfo.Name())
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
 		return "", fmt.Errorf("write to %s: %w", dst, err)
 	}
 
@@ -451,7 +451,7 @@ func (e *Engine) failAfterArtifacts(ctx context.Context, pkgName domain.PackageN
 func (e *Engine) noteKeptWorkspace(ctx context.Context, pkg domain.PackageName, dir, logPath string) {
 	msg := "Build workspace kept for inspection: " + dir + " (removed by the next failed build)"
 	if logPath != "" {
-		f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
+		f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o600)
 		if err == nil {
 			_, err = fmt.Fprintf(f, "\n==> %s\n", msg)
 			if cerr := f.Close(); err == nil {

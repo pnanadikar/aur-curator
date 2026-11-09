@@ -6,7 +6,8 @@ documentation. For installing and using aur-curator, see the
 
 ## Prerequisites
 
-- Go 1.26 or newer.
+- Go 1.26.10 or newer (`go.mod` requires it: earlier 1.26 releases
+  have known vulnerabilities in code aur-curator calls, #493).
 - [`golangci-lint`](https://golangci-lint.run/), for `make lint`.
 - To run the app against real packages: Arch Linux with `base-devel`,
   `git` and `pacman`, plus a Gitea instance and organization you can
@@ -25,7 +26,8 @@ documentation. For installing and using aur-curator, see the
 | `make install` | Build and install to `~/.local/bin` (`PREFIX=` to change). |
 | `make test` | `go test ./...` |
 | `make test-race` | `go test -race ./...` (needs cgo; slower). |
-| `make lint` | `tools/tracecheck`, then `golangci-lint run ./...` |
+| `make lint` | `tools/tracecheck`, then `golangci-lint run ./...` (gosec included) |
+| `make vuln` | `govulncheck` (pinned version) over `./...`; needs the network. |
 | `make vet` | `go vet ./...` |
 | `make fmt` | `gofmt -w` across `cmd/`, `internal/` and `tools/`. |
 
@@ -35,7 +37,9 @@ those, and they silently drop log fields.
 
 ### Before a change is merged
 
-- `make build`, `make test` and `make lint` are clean.
+- `make build`, `make test` and `make lint` are clean. `make lint`
+  includes gosec; a `//nolint:gosec` names the rule's reason not to
+  apply, like every other `//nolint` (#493).
 - New tests fail against the code before the fix, and pass after it.
 - `make test-race` is clean when the change touches goroutines,
   `tea.Cmd` concurrency, or state shared between tests (for example
@@ -322,7 +326,8 @@ It checks first, and stops before tagging anything if:
 - you are not on `main`, the working tree has uncommitted changes, or
   `main` differs from `origin/main` after a fetch;
 - the tag already exists, locally or on `origin`;
-- `make test` fails.
+- `make test` fails;
+- `make vuln` reports a vulnerability in code aur-curator calls (#493).
 
 Then it tags `main`, pushes the tag to `origin` (Gitea), runs `make build`,
 checks that `bin/aur-curator --version` prints the release, and runs
@@ -330,9 +335,17 @@ checks that `bin/aur-curator --version` prints the release, and runs
 tag is already on `origin`: finish those steps by hand rather than
 running `make release` again with the same version (#464).
 
+When `make vuln` stops a release, read which module or Go release has
+the fix (govulncheck's `Fixed in:`). For a module, `go get
+<module>@<fixed version>` and `go mod tidy`; for the standard library,
+raise the `go` line in `go.mod` (`go mod edit -go=<fixed version>`).
+Merge that like any change, then release. If no fix exists yet, decide
+from govulncheck's trace whether the release can wait.
+
 By hand, the same release is:
 
 ```sh
+make test && make vuln
 git tag -a v1.2.3 -m "v1.2.3"
 git push origin v1.2.3
 make build

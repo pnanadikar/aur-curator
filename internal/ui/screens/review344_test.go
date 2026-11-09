@@ -15,16 +15,16 @@ func TestReviewHomeEnd(t *testing.T) {
 	model, _ := newTestReviewScreen(t)
 	model, _ = loadReadyScreen(t, model)
 	upd, _ := model.Update(tea.WindowSizeMsg{Width: theme.MinScreenWidth, Height: 40})
-	model = upd.(ReviewScreen)
+	model = upd
 	model.diffPane.SetFiles([]git.FileDiff{{Patch: manyLines(200)}})
 
 	upd, _ = model.Update(endKeyMsg)
-	model = upd.(ReviewScreen)
+	model = upd
 	if model.diffPane.ScrollPosition() == 0 {
 		t.Fatal("End did not scroll the Diff pane to the bottom")
 	}
 	upd, _ = model.Update(homeKeyMsg)
-	model = upd.(ReviewScreen)
+	model = upd
 	if got := model.diffPane.ScrollPosition(); got != 0 {
 		t.Fatalf("Home: Diff scroll position %d, want 0", got)
 	}
@@ -33,7 +33,7 @@ func TestReviewHomeEnd(t *testing.T) {
 	model.tabs.SetActive(4)
 	model.findingsPane.SetContent(manyLines(200))
 	upd, _ = model.Update(endKeyMsg)
-	model = upd.(ReviewScreen)
+	model = upd
 	if model.findingsPane.ScrollPosition() == 0 {
 		t.Fatal("End did not scroll the Findings pane to the bottom")
 	}
@@ -48,16 +48,16 @@ func TestReviewHomeEndBlockedByModal(t *testing.T) {
 	model, _ := newTestReviewScreen(t)
 	model, _ = loadReadyScreen(t, model)
 	upd, _ := model.Update(tea.WindowSizeMsg{Width: theme.MinScreenWidth, Height: 40})
-	model = upd.(ReviewScreen)
+	model = upd
 	model.diffPane.SetFiles([]git.FileDiff{{Patch: manyLines(200)}})
 
 	upd, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = upd.(ReviewScreen)
+	model = upd
 	if model.modal == nil {
 		t.Fatal("setup: Enter did not open the Approve modal")
 	}
 	upd, _ = model.Update(endKeyMsg)
-	model = upd.(ReviewScreen)
+	model = upd
 	if model.diffPane.ScrollPosition() != 0 {
 		t.Fatal("End scrolled the Diff pane while the Approve modal was open")
 	}

@@ -48,9 +48,9 @@ func newScreen399(t *testing.T, g git.Provider, stored, shown *domain.Review, cf
 	engine := review.NewEngine(g, store, fakeAnalyzerManager{}, policy.NewEngine(domain.PolicyConfig{}))
 	m := NewReviewScreen("yay", g, store, engine, cfg)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	m = updated.(ReviewScreen)
+	m = updated
 	updated, _ = m.Update(reviewLoadedMsg{review: shown})
-	return updated.(ReviewScreen), store
+	return updated, store
 }
 
 func TestReplacedNoticeText399(t *testing.T) {
@@ -159,7 +159,7 @@ func TestLoadReadsVersionOnlyAfterRefusal399(t *testing.T) {
 func update399(t *testing.T, m ReviewScreen, msg tea.Msg) (ReviewScreen, tea.Cmd) {
 	t.Helper()
 	updated, cmd := m.Update(msg)
-	return updated.(ReviewScreen), cmd
+	return updated, cmd
 }
 
 // TestReloadsAfterOwnOperation399: a completed operation for this package

@@ -1,6 +1,6 @@
 # Package Details
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: ui-overview.md, domain.md, workflow.md, tui-dashboard-wireframe.md
 
@@ -152,7 +152,9 @@ With no build, the block shows `No builds recorded`.
 
 #### Commits
 
-The upstream commits not yet merged, one per line:
+The upstream commits not yet merged, one per line. A control, bidi or
+zero-width character in an author or subject shows as an escape in the
+error style (`tui-review.md` § Escaped Characters, #491):
 
 ```text
   635e8660  Yigit Sever  upgpkg: pfetch 1.11.0-1  2026-06-10T01:43:29+03:00
@@ -231,6 +233,7 @@ Follows § Action Bar Convention below. Actions, in bar order:
 | `B` | Build | Review Approved and its commit merged (Merged or later) |
 | `C` | Confirm | State is Built |
 | `P` | Publish | State is Confirmed |
+| `v` | View: the active tab's content in `$PAGER` (`tui-review.md` § Your Own Tools, #488) | The tab has content |
 | `Esc` | Back | Always |
 
 These conditions follow `workflow.md` § Action Availability and match the

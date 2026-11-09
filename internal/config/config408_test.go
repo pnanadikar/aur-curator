@@ -195,9 +195,9 @@ func TestLoad408_Accepted(t *testing.T) {
 		{"defaults", nil,
 			"/srv/aur|/srv/repo|/srv/aur/.aur-curator/activity.log|https://git.example.com|aur|tok|custom.db.tar.gz|makepkg"},
 		{"trimmed and cleaned", map[string]string{
-			"rootPath": `" /srv//aur/ "`, "giteaBaseURL": `" http://g.lan:3000 "`, "giteaOrg": `" aur "`,
+			"rootPath": `" /srv//aur/ "`, "giteaBaseURL": `" http://localhost:3000 "`, "giteaOrg": `" aur "`,
 			"giteaToken": `" tok "`, "repoDBName": `" mine.db.tar.gz "`, "builderBackend": `" makepkg "`},
-			"/srv/aur|/srv/repo|/srv/aur/.aur-curator/activity.log|http://g.lan:3000|aur|tok|mine.db.tar.gz|makepkg"},
+			"/srv/aur|/srv/repo|/srv/aur/.aur-curator/activity.log|http://localhost:3000|aur|tok|mine.db.tar.gz|makepkg"},
 		{"tilde expanded", map[string]string{"rootPath": `"~/aur"`, "activityLogPath": `"~"`},
 			home + "/aur|/srv/repo|" + home + "|https://git.example.com|aur|tok|custom.db.tar.gz|makepkg"},
 		{"sibling with shared prefix is not inside", map[string]string{"repositoryPath": `"/srv/aur-repo"`},

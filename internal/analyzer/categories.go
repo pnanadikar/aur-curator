@@ -26,6 +26,10 @@ const (
 	// CategoryNetworkDownload is network access from PKGBUILD or
 	// .install code rather than through source=().
 	CategoryNetworkDownload = "network_download"
+	// CategoryShellInComment is a shell_exec or network_download pattern
+	// on a line starting with #: usually a comment, but such a line runs
+	// inside a multi-line string or an unquoted heredoc (#494).
+	CategoryShellInComment = "shell_in_comment"
 	// CategoryInstallChanged is a .install scriptlet added or changed
 	// (#476).
 	CategoryInstallChanged = "install_changed"
@@ -38,9 +42,14 @@ const (
 	// CategoryArrayUnreadable is an array the analyzers read that could
 	// not be parsed, so no check covered it (#484).
 	CategoryArrayUnreadable = "array_unreadable"
+	// CategoryMaintainerChanged is a change of AUR maintainer or
+	// co-maintainers since the last recorded review. Emitted by the
+	// review engine from the AUR record, not by an analyzer (#495).
+	CategoryMaintainerChanged = "maintainer_changed"
 )
 
-// Categories lists every category an analyzer can emit.
+// Categories lists every category a finding can have: those the
+// analyzers emit, and maintainer_changed from the review engine.
 var Categories = []string{
 	CategoryURLNew,
 	CategoryPGPRemoved,
@@ -49,8 +58,10 @@ var Categories = []string{
 	CategoryVersionBump,
 	CategoryShellExec,
 	CategoryNetworkDownload,
+	CategoryShellInComment,
 	CategoryInstallChanged,
 	CategoryPGPKeyChanged,
 	CategoryDependsAdded,
 	CategoryArrayUnreadable,
+	CategoryMaintainerChanged,
 }

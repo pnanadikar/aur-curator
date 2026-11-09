@@ -118,6 +118,18 @@ type OperationCancelledMsg struct {
 	TraceCtx context.Context
 }
 
+// ToolDoneMsg reports that a tool the user opened from a screen (the diff
+// tool or the pager, #488) has exited and the TUI is back. Err is set when
+// the tool could not be started or exited with an error; Stderr is the
+// tail of what it wrote there, which the redraw would otherwise wipe out.
+// App toasts and logs a failure; success needs nothing.
+type ToolDoneMsg struct {
+	What   string // "Diff tool", "Pager"
+	Pkg    domain.PackageName
+	Err    error
+	Stderr string
+}
+
 // ToastMsg carries a transient notification string dispatched to App.
 type ToastMsg struct {
 	Text string

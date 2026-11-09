@@ -84,6 +84,15 @@ func (d DiffPane) View() string {
 	return d.viewport.View()
 }
 
+// Content returns the whole rendered diff, styled, not just the part in
+// view (the pager key, #488); "" when no files are set.
+func (d DiffPane) Content() string {
+	if len(d.files) == 0 {
+		return ""
+	}
+	return renderFiles(d.files, d.emptyText, d.viewport.Width)
+}
+
 // ScrollPosition returns the current scroll line.
 func (d DiffPane) ScrollPosition() int {
 	return d.viewport.YOffset
@@ -121,9 +130,11 @@ func renderFiles(files []git.FileDiff, emptyText string, width int) string {
 // no text patch says so by name rather than implying nothing changed.
 func renderDiff(f git.FileDiff) string {
 	if strings.TrimSpace(f.Patch) == "" {
-		return theme.SubtleStyle().Render("No text changes in " + f.Path + ".")
+		return theme.RenderEscaped("No text changes in "+f.Path+".", theme.SubtleStyle())
 	}
 
+	// Patch lines are the maintainer's text: control, bidi and zero-width
+	// characters show as escapes, never raw (#491).
 	lines := strings.Split(f.Patch, "\n")
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -132,13 +143,13 @@ func renderDiff(f git.FileDiff) string {
 			strings.HasPrefix(line, "---"),
 			strings.HasPrefix(line, "+++"),
 			strings.HasPrefix(line, "@@"):
-			rendered = append(rendered, theme.DiffHeaderStyle().Render(line))
+			rendered = append(rendered, theme.RenderEscaped(line, theme.DiffHeaderStyle()))
 		case strings.HasPrefix(line, "+"):
-			rendered = append(rendered, theme.DiffAddedStyle().Render(line))
+			rendered = append(rendered, theme.RenderEscaped(line, theme.DiffAddedStyle()))
 		case strings.HasPrefix(line, "-"):
-			rendered = append(rendered, theme.DiffRemovedStyle().Render(line))
+			rendered = append(rendered, theme.RenderEscaped(line, theme.DiffRemovedStyle()))
 		default:
-			rendered = append(rendered, theme.DiffContextStyle().Render(line))
+			rendered = append(rendered, theme.RenderEscaped(line, theme.DiffContextStyle()))
 		}
 	}
 	return strings.Join(rendered, "\n")

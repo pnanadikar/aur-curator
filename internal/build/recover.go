@@ -66,10 +66,10 @@ func (e *Engine) RecoverInterrupted(ctx context.Context, pkgs []domain.PackageNa
 // appendInterruptedNote appends a closing line to an interrupted build's log,
 // creating the log (and its directory) if the build never got that far.
 func appendInterruptedNote(logPath string, at time.Time) error {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}

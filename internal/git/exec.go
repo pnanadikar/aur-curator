@@ -20,7 +20,7 @@ type ExecRunner struct{}
 // does not kill. procgroup.Run puts the process in its own group and kills the
 // entire group when the context is cancelled.
 func (ExecRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // git itself; this package builds the arguments
 	cmd.Dir = dir
 
 	var stdout, stderr bytes.Buffer

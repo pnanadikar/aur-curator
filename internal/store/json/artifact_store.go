@@ -52,7 +52,7 @@ func (s *ArtifactStore) Save(id domain.ArtifactID, artifact *domain.Artifact) er
 	}
 
 	dir := s.paths.ArtifactDir(id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create artifact directory %s: %w", dir, err)
 	}
 
@@ -62,7 +62,7 @@ func (s *ArtifactStore) Save(id domain.ArtifactID, artifact *domain.Artifact) er
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(s.paths.ArtifactPath(id), data, 0o644); err != nil {
+	if err := os.WriteFile(s.paths.ArtifactPath(id), data, 0o600); err != nil {
 		return fmt.Errorf("write artifact %s: %w", id, err)
 	}
 	return nil

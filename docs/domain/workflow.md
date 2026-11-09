@@ -1,6 +1,6 @@
 # Package Lifecycle
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 > Status: Active
 > Companion docs: domain.md, tui-review.md, developer-guide.md,
 > git-command-walkthrough.md (the git commands behind each step)
@@ -512,7 +512,10 @@ The version string is built from the first plain `epoch`, `pkgver` and
 `pkgrel` assignments in the PKGBUILD, indented or not. It cannot be read
 when `pkgver` or `pkgrel` is missing, or when `epoch`, `pkgver` or
 `pkgrel` is computed rather than written out: its value contains a `$` or
-a backtick, and aur-curator does not run shell code. A `pkgver()` function
+a backtick, and aur-curator does not run shell code. It cannot be read
+either when one of them holds a control, bidi or zero-width character
+(`tui-review.md` § Escaped Characters, #491): such a value would print
+something other than itself, and the diff shows that line escaped. A `pkgver()` function
 makes no difference; § VCS Packages says why.
 
 **Why the reviewed commit, not local `master`:** `master` holds only what

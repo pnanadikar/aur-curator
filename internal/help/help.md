@@ -65,11 +65,18 @@ the review.
 
 | Analyzer | Reads | Reports (default severity) |
 | --- | --- | --- |
-| Shell | lines the change adds to the PKGBUILD and `.install` files | commands that run other code (`eval`, `bash -c`, `$(…)`, backticks, `source`, a pipe into `sh`) or use the network (`curl`, `wget`, `git clone`, `nc`, `/dev/tcp/`): High; a `.install` file added or changed (pacman runs it as root): Medium |
+| Shell | lines the change adds to the PKGBUILD and `.install` files | commands that run other code (`eval`, `bash -c`, `$(…)`, backticks, `source`, a pipe into `sh`) or use the network (`curl`, `wget`, `git clone`, `nc`, `/dev/tcp/`): High. The same on a line starting with `#`: Low, as "Comment line"; usually a comment, but such a line runs inside a multi-line string or heredoc, so read it in the diff. A `.install` file added or changed (pacman runs it as root): Medium |
 | URL | `source` arrays of the old and new PKGBUILD | a download URL the old file did not have: High |
 | Depends | dependency arrays of the old and new PKGBUILD | packages added to `depends`, `makedepends`, `checkdepends` or `optdepends`: Medium |
 | Checksum | `validpgpkeys`, checksum arrays, `pkgver` and `pkgrel` of the old and new PKGBUILD | every PGP key removed: High; a key added or replaced: Medium; a checksum replaced by `SKIP` or emptied: High; checksums changed: Low; version changed: Low |
 | Pkgbuild | arrays of the new PKGBUILD | an array the analyzers could not read: High. Check those lines in the diff |
+| AUR | the package's AUR record, read while the analyzers run | the maintainer or co-maintainers differ from the last review that recorded them (a new maintainer, orphaned, adopted): Medium. An adoption can be legitimate; read the diff with it in mind |
+
+The AUR check is skipped, and the Findings tab says why, when there is no
+earlier record (a first review), when the AUR could not be read, or when
+the earlier reviews were approved without analysis. A first review also
+shows when the package was first submitted, its votes and popularity: a
+days-old package with no votes deserves a slow read.
 
 Arrays are compared entry by entry, wherever they are in the file and
 however they are quoted: moving or reformatting an entry is not a
@@ -85,6 +92,11 @@ finding. What they cannot see:
   round. A deleted checksum array is not reported (makepkg refuses to
   build sources no checksum verifies), so a switch to a weaker remaining
   algorithm shows only in the diff.
+
+A control character (`\x1b`, `\r`, …) or an invisible bidi or zero-width
+character (`\u202e`, `\u200b`, …) in the diff, a finding or a commit is
+shown as a red escape, not passed to the terminal: such characters can
+hide a line or show text over it. Treat one in a PKGBUILD as suspect.
 
 ## Usage
 

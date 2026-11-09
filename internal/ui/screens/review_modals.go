@@ -26,15 +26,25 @@ const (
 	modalInconsistency
 )
 
+// notAnalysedLines open the approve modal for a review whose analyzers
+// have not run: they name every check skipped (#495). Fixed lines of at
+// most 64 columns: the modal does not wrap, and a wider line would widen
+// it past an 80-column terminal. The blank line sets the warning apart
+// from the notes input.
+var notAnalysedLines = []string{
+	"This update has not been analysed, so these checks have not run:",
+	"sources, checksums, PGP keys, dependencies, shell code and the",
+	"AUR maintainer. Approve anyway?",
+	"",
+}
+
 func (m *ReviewScreen) openApproveModal() {
 	p := m.engine.Policy()
 
 	var lines []string
 	if m.review != nil {
 		if m.review.FindingsStatus == domain.FindingsNotRun {
-			lines = append(lines,
-				"No analyzers have been run for this review. Approve anyway?",
-			)
+			lines = append(lines, notAnalysedLines...)
 		} else if len(m.review.Findings) == 0 {
 			lines = append(lines, "There are 0 findings, approve?")
 		} else {

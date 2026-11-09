@@ -26,7 +26,7 @@ func loadFindings(t *testing.T, model ReviewScreen, findings []domain.Finding) R
 			Findings:       findings,
 		},
 	})
-	return updated.(ReviewScreen)
+	return updated
 }
 
 func unmappedFindings() []domain.Finding {
@@ -40,7 +40,7 @@ func readySized(t *testing.T) ReviewScreen {
 	t.Helper()
 	model, _ := newTestReviewScreen(t)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	return updated.(ReviewScreen)
+	return updated
 }
 
 func TestInconsistencyModalOnLoad(t *testing.T) {
@@ -77,7 +77,7 @@ func TestInconsistencyModalDismiss(t *testing.T) {
 		t.Run(k.String(), func(t *testing.T) {
 			model := loadFindings(t, readySized(t), unmappedFindings())
 			updated, cmd := model.Update(k)
-			model = updated.(ReviewScreen)
+			model = updated
 			if model.modal != nil {
 				t.Fatalf("%s did not dismiss the modal", k)
 			}
@@ -93,7 +93,7 @@ func TestInconsistencyModalDismiss(t *testing.T) {
 func TestInconsistencyModalOncePerOpening(t *testing.T) {
 	model := loadFindings(t, readySized(t), unmappedFindings())
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	// A reload (e.g. after an operation) does not show it again.
 	model = loadFindings(t, model, unmappedFindings())
@@ -112,7 +112,7 @@ func TestInconsistencyModalOncePerOpening(t *testing.T) {
 func TestInconsistencyLinesOnFindingsTab(t *testing.T) {
 	model := loadFindings(t, readySized(t), unmappedFindings())
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(ReviewScreen)
+	model = updated
 
 	content := model.renderFindingsContent()
 	want := `Internal inconsistency: finding category "` + retiredCategory + `" has no severity (ranked HIGH).`

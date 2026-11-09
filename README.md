@@ -140,7 +140,7 @@ Required settings:
 | --- | --- |
 | `rootPath` | Workspace: one Git repository per curated package, plus aur-curator's own state in `<rootPath>/.aur-curator/`. |
 | `repositoryPath` | The local pacman repository that packages are published to. |
-| `giteaBaseURL` | Your Gitea instance, e.g. `https://gitea.example.com`. |
+| `giteaBaseURL` | Your Gitea instance, e.g. `https://gitea.example.com`. `http://` is refused unless the host is `localhost` or a loopback address, because every request carries your token. |
 | `giteaOrg` | The Gitea organization that holds the package repositories. |
 
 Optional settings:
@@ -300,6 +300,44 @@ Run `aur-curator --help` for flags and details.
   <package-name>`. This deletes its Gitea repository, its local clone and
   its aur-curator records. It does not uninstall the package and does not
   remove it from the local pacman repository.
+
+### Reading a review in your own tools
+
+On the Review screen, `d` opens the change in your own diff tool through
+`git difftool`: the reviewed range, every file of the tab you are on, one
+after another, with git's usual prompt. Your git configuration decides
+which tool (`diff.tool`): git runs in the package's clone under
+`rootPath`, so it reads your global configuration (`git config --global
+diff.tool vimdiff`) or that clone's own, never the directory you started
+aur-curator from. `v`, on Review and Package Details, opens the
+tab's content in `$PAGER` (`less -R` if unset); `PAGER=bat` highlights
+diffs. Quit the tool to return to aur-curator.
+
+**These files are untrusted.** They come from the AUR, and the point of
+reviewing them is that they may be hostile. Tools can run code from the
+files they open:
+
+- **vim and vimdiff modelines** (a line like `# vim: …`) set options when
+  a file is opened, and have been exploited to run commands
+  (CVE-2019-12735). Turn them off for the diff tool. The option must be
+  given with `--cmd`, which vim applies before reading the files; with
+  `-c` it comes too late and the modeline still applies:
+
+  ```sh
+  git config --global difftool.vimdiff.cmd 'vimdiff --cmd "set nomodeline" "$LOCAL" "$REMOTE"'
+  ```
+
+  For nvim, `nvimdiff` takes the same `--cmd`.
+- **Editor plugins** (language servers, linters) may run code or tools
+  on a file they open. Use a plain diff tool, or a profile without them.
+- **`LESSOPEN`** (lesspipe) runs a program on every file `less` opens.
+  aur-curator removes `LESSOPEN` and `LESSCLOSE` from the pager's
+  environment: the file `v` writes is plain text and needs no filter.
+  Other pagers' own filters are your configuration.
+
+git does not report a diff tool's own exit status unless
+`difftool.trustExitCode` is set, so a tool that fails may simply return
+you to aur-curator.
 
 ### Files aur-curator creates
 
