@@ -66,6 +66,8 @@ Represents an objective assessment rather than a human decision.
 
 A build execution corresponding to an approved reviewed commit.
 
+A build runs inside the **build sandbox** (bubblewrap): it sees only the system's read-only trees (`/usr`, `/etc`, `/opt`), writes only its own workspace, and cannot reach the user's home directory, other packages, the local repository or the session's sockets (`domain.md` § Build → Build Environment).
+
 ---
 
 ## Artifact

@@ -88,7 +88,7 @@ func (e *Engine) RunBuild(ctx context.Context, pkgName domain.PackageName) (*dom
 	build := &domain.Build{
 		ID:                 domain.BuildID(generateUUID()),
 		PackageName:        pkgName,
-		Backend:            "makepkg",
+		Backend:            Backend,
 		Status:             domain.BuildPending,
 		StartTime:          time.Now(),
 		ReviewedCommit:     commit,

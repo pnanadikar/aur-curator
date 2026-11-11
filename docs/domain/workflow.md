@@ -1,6 +1,6 @@
 # Package Lifecycle
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 > Status: Active
 > Companion docs: domain.md, tui-review.md, developer-guide.md,
 > git-command-walkthrough.md (the git commands behind each step)
@@ -819,7 +819,8 @@ open or a build is running.
 
 It fixes some problems automatically and only reports others. It never
 touches Gitea or the local git clones. It reads the local pacman
-repository (check 3) but never changes it.
+repository (check 3) but never changes it. Check 4 starts the build
+sandbox, which runs no package code.
 
 | Check | What it looks for | Action |
 | --- | --- | --- |
@@ -835,6 +836,11 @@ repository (check 3) but never changes it.
 | 3 | A repository database entry whose file is missing from the repository directory, or whose file's SHA-256 differs from the entry's `%SHA256SUM%` | Report. Remedy: rebuild, Confirm, Publish (or re-run `repo-add` by hand with the right file). |
 | 3 | A last success not marked Published, though some or all of its artifact checksums are in the repository database | Report. Remedy: Confirm (if Built), then Publish. |
 | 3 | A last success marked Published, though not all of its artifact checksums are in the repository database | Report. Remedy: rebuild, Confirm, Publish; if the removal was intended, `remove` the package. |
+| 4 | The build sandbox cannot be set up (`bwrap` missing, too old, or refused by the kernel), or its self-test fails a check (`domain.md` § Build → Build Environment) | Report, one finding per failing check, with its detail. Every build would fail the same way (#496). |
+
+Check 4 runs the self-test in a throwaway directory under
+`.aur-curator/`, removed afterwards, with the paths a build uses. It
+needs no package.
 
 The check 3 repository rows are explained in § Published: Stored Flag, Its
 Limits, and Drift Detection. A missing repository database means nothing

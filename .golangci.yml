@@ -38,3 +38,6 @@ formatters:
 
 run:
   timeout: 5m
+  # Lint the sandbox fixtures too (make test-sandbox, #496).
+  build-tags:
+    - sandboxfixtures

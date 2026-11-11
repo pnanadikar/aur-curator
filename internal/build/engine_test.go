@@ -171,6 +171,10 @@ func TestRunBuildArtifactsPersistAfterCleanup(t *testing.T) {
 	if build.Status != domain.BuildSuccess {
 		t.Fatalf("build status = %q, want %q", build.Status, domain.BuildSuccess)
 	}
+	// Every build records the sandboxed backend (#496).
+	if build.Backend != "makepkg+bwrap" {
+		t.Errorf("Backend = %q, want makepkg+bwrap", build.Backend)
+	}
 
 	if build.LogLocation == "" {
 		t.Fatal("LogLocation is empty")

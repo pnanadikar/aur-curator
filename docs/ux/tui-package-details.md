@@ -1,6 +1,6 @@
 # Package Details
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 > Status: Active
 > Companion docs: ui-overview.md, domain.md, workflow.md, tui-dashboard-wireframe.md
 
@@ -165,8 +165,24 @@ Short hash, author, subject, date. With nothing to merge, it shows
 
 #### Build Log
 
-The log of the latest build attempt, under a `Build Log` heading.
-Otherwise one of these lines:
+The log of the latest build attempt, under a header line naming that
+build: its commit (8 characters), start time (local, with the year)
+and status, read from the build record each time the log is read
+(#507):
+
+```text
+a1b2c3d4 · 6 Nov 2026 20:13 · running
+An update merged since (2e00dbaf) is not built yet.
+
+aur-curator: build environment: …
+```
+
+The status is the record's: `pending` or `running` while the build runs
+(`End` re-reads it with the log), then `success` or `failed`. The second
+line, the update note, appears only when the build is behind (§ Update
+Note). A blank line separates the header from the log.
+
+Otherwise one of these lines, with no header:
 
 | Shown | When |
 | --- | --- |
@@ -181,9 +197,12 @@ Otherwise one of these lines:
 | `Could not load the build log: <error>` | Reading failed. Also written to the error log |
 
 The log's first line is written by aur-curator, not makepkg:
-`aur-curator: removed from build environment:` followed by the removed
-variable names, or `none` (`domain.md` § Build → Build Environment). Logs
-of builds before #473 do not have it.
+`aur-curator: build environment:` followed by the names of the variables
+passed into the build sandbox (`domain.md` § Build → Build Environment).
+A build whose sandbox self-test failed shows the failing checks instead
+of makepkg's output. Logs of builds before #496 start with
+`aur-curator: removed from build environment:`, and logs before #473
+with makepkg's own output.
 
 `End` on this tab re-reads the log and jumps to its bottom: the way to
 follow a running build. When a build completes, the screen switches to
@@ -194,10 +213,13 @@ ast \r is shown. Other control characters except tab are dropped. The log file o
 
 #### Artifacts
 
-The artifacts of the last successful build, under an `Artifact History`
-heading:
+The artifacts of the last successful build, under a header line naming
+that build: its commit and start time, as on the Build Log tab, with the
+same update note when it applies (§ Update Note, #507):
 
 ```text
+a1b2c3d4 · 6 Nov 2026 20:13
+
   1. duplicati-bin-2.4.0.1-2-x86_64.pkg.tar.zst (x86_64) 2.4.0.1-2
      Checksum: fa7faf305612fb1fa666f43f39214b2b3b9d684b250219e75ad16567210c4dde
      Size: 81.7 MB
@@ -219,6 +241,31 @@ previous one's records and files (#130, #352). Otherwise one of these lines:
 If some artifact records cannot be read, the tab lists each unreadable record first, noting it may 
 belong to any package, then this package’s readable records (or the empty state). If the artifact 
 store itself cannot be read, it shows only the error.
+
+The header names the last successful build only when every listed
+artifact's build ID is that build's. Otherwise the records disagree,
+which aur-curator never does itself: the header is left out, and a
+`⚠` line names the artifacts' build ID(s) and asks for a bug report
+(#507). If the last successful build's record cannot be read, a `⚠`
+line gives the error instead of the header (also written to the error
+log).
+
+#### Update Note
+
+The second header line on Build Log and Artifacts, shown when the build
+the tab names is not the package's newest reviewed code (#507). Checked
+in this order, against the build's commit:
+
+| Shown | When |
+| --- | --- |
+| `An update merged since (<commit>) is not built yet.` | Local `master` (HEAD) is not the build's commit. `<commit>` is HEAD |
+| `An update fetched since (<commit>) is not built yet.` | The review's upstream commit is not merged, and the review is not Rejected. `<commit>` is the upstream commit |
+
+Nothing is shown when the build is current, or for a fetched commit
+whose review is Rejected (the update was turned down, not left to
+build). A row whose input could not be read (local HEAD for the first,
+the merge state for the second) is skipped, not guessed; that failure
+is already a warning on Summary.
 
 ### 8. Action Bar
 

@@ -142,8 +142,8 @@ func TestDetailTabSwitchToArtifactsShowsContent(t *testing.T) {
 	if !strings.Contains(view, "pkg-1.0-1-x86_64.pkg.tar.zst") {
 		t.Fatal("artifacts tab should show artifact filename after switch")
 	}
-	if !strings.Contains(view, "Artifact History") {
-		t.Fatal("artifacts tab should show artifact header after switch")
+	if strings.Contains(view, "Artifact History") {
+		t.Fatal("the Artifact History heading was replaced by the build header (#507)")
 	}
 }
 
@@ -257,7 +257,7 @@ func TestDetailPrevTabKeyCyclesAllTabs(t *testing.T) {
 func TestRenderBuildLogContentStripsCR(t *testing.T) {
 	t.Parallel()
 
-	result := renderBuildLogContent("x\r\n\r 0 a\r100 b\n")
+	result := renderBuildLogContent("", "x\r\n\r 0 a\r100 b\n")
 	if strings.Contains(result, "\r") {
 		t.Error("renderBuildLogContent should contain no \\r characters")
 	}

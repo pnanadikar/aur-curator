@@ -1,6 +1,6 @@
 # Interfaces
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-10
 > Status: Active
 > Companion docs: domain.md, architecture.md
 > This document defines the major architectural interfaces within aur-curator.
@@ -349,9 +349,11 @@ Produce installable packages from a prepared workspace.
 - report build results (`BuildResult`)
 - expose build artifacts
 
-Current implementation: `MakepkgBuilder`, always used. `config.Load`
-accepts only `makepkg` for the `builderBackend` config key (#408); a new
-backend adds its value there and its selection in `NewDependencies`.
+Current implementation: `MakepkgBuilder`, always used. It runs makepkg in
+a bubblewrap sandbox (`domain.md` § Build → Build Environment, #496).
+`config.Load` accepts only `makepkg` for the `builderBackend` config key
+(#408); a new backend adds its value there and its selection in
+`NewDependencies`, and must give at least the sandbox's guarantees.
 
 Possible future implementations:
 

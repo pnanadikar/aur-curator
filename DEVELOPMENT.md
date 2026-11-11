@@ -26,6 +26,7 @@ documentation. For installing and using aur-curator, see the
 | `make install` | Build and install to `~/.local/bin` (`PREFIX=` to change). |
 | `make test` | `go test ./...` |
 | `make test-race` | `go test -race ./...` (needs cgo; slower). |
+| `make test-sandbox` | Hostile fixture PKGBUILDs built in the real build sandbox: each attack must fail (#496). Needs bwrap and makepkg; run as a normal user. |
 | `make lint` | `tools/tracecheck`, then `golangci-lint run ./...` (gosec included) |
 | `make vuln` | `govulncheck` (pinned version) over `./...`; needs the network. |
 | `make vet` | `go vet ./...` |
@@ -44,6 +45,9 @@ those, and they silently drop log fields.
 - `make test-race` is clean when the change touches goroutines,
   `tea.Cmd` concurrency, or state shared between tests (for example
   parallel subtests).
+- `make test-sandbox` is clean when the change touches
+  `internal/sandbox`, `internal/build`'s makepkg path or the build
+  environment (#496).
 - The change has been run by hand against real packages. Passing tests
   are necessary but not sufficient: many defects in this project have
   only shown up in manual runs, especially around the TUI and around
@@ -249,6 +253,7 @@ internal/help/          help text for the TUI and --help
 Infrastructure
 internal/instancelock/  one running aur-curator per workspace
 internal/procgroup/     runs subprocesses in their own process group
+internal/sandbox/       the build sandbox: the only package that knows bwrap
 internal/sanitize/      cleans raw command output for display and logs
 internal/activitylog/   always-on activity log
 internal/errorlog/      always-on error log

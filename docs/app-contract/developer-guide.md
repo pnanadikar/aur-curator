@@ -1,6 +1,6 @@
 # Developer Guide: aur-curator
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 > Status: Active
 > Companion docs: `architecture.md`, `interfaces.md`, `domain.md`,
 > `workflow.md`, `ui-overview.md`; repository root `DEVELOPMENT.md`
@@ -47,6 +47,7 @@ what they use through constructors.
 ### Startup order
 
 ```text
+sandbox-exec | sandbox-probe             hidden first argument: the in-sandbox helper (§ Sandbox); no config, no lock
 config.Load(path)                        WorkspaceConfig (plain function, no provider interface)
   → trace / debug sinks                  --trace, --debug-log, AUR_CURATOR_TRACE, AUR_CURATOR_DEBUG
   → catalog.NewFilesystemCatalog(root)
@@ -56,7 +57,7 @@ config.Load(path)                        WorkspaceConfig (plain function, no pro
        TUI       lock → NewDependencies → recover interrupted builds → ui.NewApp → tea.Program
        import    lock → provider.Import → NewDependencies → EnsureReview [→ RunAnalyzers]
        remove    lock → NewDependencies → confirm → forge + stores + files
-       check     lock → NewDependencies → consistency checks
+       check     lock → NewDependencies → consistency checks (4: sandbox self-test)
        update    lock → NewDependencies → AUR check → prompts → FetchAndReview
        outdated  lock → review store → AUR check → print the stale packages
 ```
@@ -74,11 +75,12 @@ running aur-curator per workspace.
 | `Analyzers` | `analyzer.New()` | no analyzer settings |
 | `Policy` | `policy.NewEngine(domain.PolicyConfig{}, policy.WithUnmappedHook(…))` | no user overrides are loaded yet; the hook writes an unmapped finding category to the error log (#475) |
 | `Reviews` | `*review.Engine` | concrete type |
-| `Builder` | `build.MakepkgBuilder{}` | always makepkg: `config.Load` accepts no other `builderBackend` (#408) |
+| `Builder` | `build.NewMakepkgBuilder(build.SandboxPaths{…})`: `rootPath`, `repositoryPath`, the config file path (absolute), `activityLogPath`, this binary (`os.Executable()`, symlinks resolved) and the home directory | always makepkg in the bubblewrap sandbox (§ Sandbox, #496); `config.Load` accepts no other `builderBackend` (#408). `main` passes the config file path, which nothing else in `deps` needs |
 | `BuildEngine` | `*build.Engine` (builder, build and artifact stores, Git, paths) | concrete type; screens reach the stores through it too |
 | `Repo` | `domain.PackageRepository{Location: repositoryPath}` | |
 | `Publisher` | `publish.NewPublisher(...)` | |
 | `AUR` | `*aurinfo.Client` | AUR RPC version checks |
+| `SandboxPaths` | the `build.SandboxPaths` the `Builder` was made from | `check` 4 runs `build.CheckSandbox` with them, so it tests the sandbox a build gets (#496) |
 | `Config` | the whole `WorkspaceConfig` | read by App and screens (paths, `AutoMerge`) |
 | `RepoStore` | `nil` placeholder | unused |
 
@@ -574,6 +576,35 @@ during a tool's run.
 wipes it out. `runTool` sets the command's `Stderr` itself (Bubble Tea
 keeps a `Stderr` that is already set) and keeps the tail, so a failure
 reaches the toast and the error log.
+
+### Sandbox
+
+Builds run in a bubblewrap sandbox (#496). Its rules are
+`domain.md` § Build → Build Environment; its threats
+`threat-model.md` § The Sandbox.
+
+- **Only `internal/sandbox` knows bwrap.** `Policy` is a value (what is
+  writable, hidden, bound read-only; the environment; network on or
+  off). `Argv` turns it into bwrap's arguments and is pure, so its tests
+  pin the argument list. `Command` builds the `exec.Cmd`; `SelfTest`
+  runs the probe.
+- **Every command that runs package code goes through
+  `sandbox.Command`:** `makepkg --printsrcinfo` and the build. `git`,
+  `repo-add` and `pacman -Q` run on the host; they run no package code.
+- **The helper is the aur-curator binary.** `main` dispatches a hidden
+  first argument before loading any config: `sandbox-exec` joins a new
+  session keyring and execs the command on the same thread;
+  `sandbox-probe` runs the in-sandbox self-test checks and prints one
+  line per check. Neither is listed in `usage`. The binary is bound in
+  read-only, because `make install` puts it under `$HOME`, which the
+  sandbox hides.
+- **No fallback.** A sandbox that cannot be set up fails the build. Do
+  not add a path that runs makepkg without it, for tests either: tests
+  use a fake `makepkg` reached through the allowlisted `PATH`.
+- **A new bind, environment variable or hidden path** changes what a
+  hostile build can reach: update `domain.md` § Build Environment and
+  `threat-model.md` in the same branch, and extend the self-test when
+  it can be checked.
 
 ### Git timeouts: one per call, recorded
 

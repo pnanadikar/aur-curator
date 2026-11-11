@@ -23,14 +23,12 @@ func wantMode(t *testing.T, path string, want os.FileMode) {
 // directories 0750 (domain.md § Workspace › File Modes, #493).
 func TestBuildFilesArePrivate(t *testing.T) {
 	t.Run("makepkg log", func(t *testing.T) {
-		logPath := filepath.Join(t.TempDir(), "logs", "build.log")
-		bin := t.TempDir()
-		fakeMakepkg(t, bin, filepath.Join(t.TempDir(), "env.dump"))
-		if _, err := (MakepkgBuilder{}).Build(t.Context(), t.TempDir(), logPath); err != nil {
-			t.Fatal(err)
+		f := newFixture(t)
+		if _, log, err := f.build(t); err != nil {
+			t.Fatalf("%v\n%s", err, log)
 		}
-		wantMode(t, logPath, 0o600)
-		wantMode(t, filepath.Dir(logPath), 0o750)
+		wantMode(t, f.logPath, 0o600)
+		wantMode(t, filepath.Dir(f.logPath), 0o750)
 	})
 	t.Run("interrupted note", func(t *testing.T) {
 		logPath := filepath.Join(t.TempDir(), "logs", "build.log")

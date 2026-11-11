@@ -26,6 +26,7 @@ import (
 	"github.com/pramod/aur-curator/internal/help"
 	"github.com/pramod/aur-curator/internal/instancelock"
 	"github.com/pramod/aur-curator/internal/review"
+	"github.com/pramod/aur-curator/internal/sandbox"
 	"github.com/pramod/aur-curator/internal/store"
 	jsonstore "github.com/pramod/aur-curator/internal/store/json"
 	"github.com/pramod/aur-curator/internal/trace"
@@ -36,6 +37,20 @@ import (
 const traceLogName = ".aur-curator" + string(filepath.Separator) + "trace.log"
 
 func main() {
+	// The sandbox helper (#496): bwrap starts this binary inside the
+	// sandbox with a hidden first argument. Dispatched before help,
+	// flags and config, none of which exist inside.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case sandbox.ExecArg:
+			err := sandbox.Exec(os.Args[2:])
+			fmt.Fprintf(os.Stderr, "aur-curator %s: %v\n", sandbox.ExecArg, err)
+			os.Exit(127)
+		case sandbox.ProbeArg:
+			os.Exit(sandbox.Probe(os.Args[2:], os.Stdout))
+		}
+	}
+
 	if showHelp(os.Args[1:]) {
 		os.Exit(0)
 	}
@@ -55,6 +70,10 @@ func main() {
 		os.Exit(2)
 	}
 	configPath := positional[0]
+	// Absolute, so the build sandbox can hide it wherever it is (#496).
+	if abs, err := filepath.Abs(configPath); err == nil {
+		configPath = abs
+	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -83,15 +102,15 @@ func main() {
 
 	switch {
 	case len(positional) == 1:
-		runTUI(cfg, pkgCatalog, provider)
+		runTUI(cfg, configPath, pkgCatalog, provider)
 	case len(positional) == 3 && positional[1] == "import":
-		runImport(cfg, pkgCatalog, provider, positional[2])
+		runImport(cfg, configPath, pkgCatalog, provider, positional[2])
 	case len(positional) == 3 && positional[1] == "remove":
-		runRemove(cfg, pkgCatalog, provider, forge, positional[2])
+		runRemove(cfg, configPath, pkgCatalog, provider, forge, positional[2])
 	case len(positional) == 2 && positional[1] == "check":
-		runCheck(cfg, pkgCatalog, provider)
+		runCheck(cfg, configPath, pkgCatalog, provider)
 	case len(positional) == 2 && positional[1] == "update":
-		runUpdate(cfg, pkgCatalog, provider)
+		runUpdate(cfg, configPath, pkgCatalog, provider)
 	case len(positional) == 2 && positional[1] == "outdated":
 		runOutdated(cfg, pkgCatalog, provider)
 	default:
@@ -211,6 +230,7 @@ func extractFlags(args []string) (debugValue string, traceValue string, position
 // rather than sitting at Not Reviewed until the Review screen is opened.
 func runImport(
 	cfg domain.WorkspaceConfig,
+	configPath string,
 	pkgCatalog catalog.PackageCatalog,
 	provider git.Provider,
 	name string,
@@ -230,7 +250,7 @@ func runImport(
 		os.Exit(1)
 	}
 
-	d := deps.NewDependencies(cfg, provider, pkgCatalog)
+	d := deps.NewDependencies(cfg, configPath, provider, pkgCatalog)
 
 	reviewCtx, cancelReview := git.GitTimeoutCtx(ctx)
 	rv, err := d.Reviews.EnsureReview(reviewCtx, domain.PackageName(name))
@@ -285,13 +305,13 @@ func acquireWorkspaceLock(cfg domain.WorkspaceConfig, cmd string) func() error {
 	return release
 }
 
-func runTUI(cfg domain.WorkspaceConfig, pkgCatalog catalog.PackageCatalog, provider git.Provider) {
+func runTUI(cfg domain.WorkspaceConfig, configPath string, pkgCatalog catalog.PackageCatalog, provider git.Provider) {
 	// One TUI per workspace (#311): startup recovery of interrupted builds
 	// is only safe when no other instance can be building.
 	release := acquireWorkspaceLock(cfg, "aur-curator")
 	defer func() { _ = release() }()
 
-	d := deps.NewDependencies(cfg, provider, pkgCatalog)
+	d := deps.NewDependencies(cfg, configPath, provider, pkgCatalog)
 
 	// Lock held, nothing started yet: builds left Pending/Running by an
 	// earlier run cannot be live (#311).
@@ -346,6 +366,7 @@ func recoverInterruptedBuilds(cfg domain.WorkspaceConfig, pkgCatalog catalog.Pac
 
 func runRemove(
 	cfg domain.WorkspaceConfig,
+	configPath string,
 	pkgCatalog catalog.PackageCatalog,
 	provider git.Provider,
 	forge git.Forge,
@@ -376,7 +397,7 @@ func runRemove(
 	}
 
 	// Step 2: Confirmation prompt
-	builds := deps.NewDependencies(cfg, provider, pkgCatalog)
+	builds := deps.NewDependencies(cfg, configPath, provider, pkgCatalog)
 
 	// aur-curator never uninstalls (workflow.md § Remove Mechanics, #351):
 	// it only checks whether the package is installed and, if so, tells the
@@ -524,13 +545,14 @@ func interpretPacmanQ(out []byte, err error) (string, error) {
 
 func runCheck(
 	cfg domain.WorkspaceConfig,
+	configPath string,
 	pkgCatalog catalog.PackageCatalog,
 	provider git.Provider,
 ) {
 	release := acquireWorkspaceLock(cfg, "aur-curator check")
 	defer func() { _ = release() }()
 
-	d := deps.NewDependencies(cfg, provider, pkgCatalog)
+	d := deps.NewDependencies(cfg, configPath, provider, pkgCatalog)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	ctx = trace.Start(ctx, "check")
@@ -550,6 +572,7 @@ func runCheck(
 		check3RepoFiles       int
 		check3NotMarked       int
 		check3NotInRepo       int
+		check4Failed          int
 		findings              []string
 	)
 
@@ -761,6 +784,28 @@ func runCheck(
 
 	trace.Log(ctx, "check3", "state", "done")
 
+	// ---- Check 4: the build sandbox's self-test (report-only, #496) ----
+	ctx = trace.Start(ctx, "check4")
+	sbx, sbxErr := build.CheckSandbox(ctx, d.SandboxPaths, aurDir)
+	for _, info := range sbx.Info {
+		fmt.Fprintf(os.Stderr, "check 4: sandbox: %s\n", info)
+	}
+	switch {
+	case len(sbx.Failed()) > 0:
+		for _, f := range sbx.Failed() {
+			check4Failed++
+			findings = append(findings, fmt.Sprintf("build sandbox: %s: %s", f.Check, f.Detail))
+		}
+	case sbxErr != nil:
+		check4Failed++
+		findings = append(findings, "build sandbox: "+sbxErr.Error())
+	}
+	if sbxErr != nil {
+		_ = errorlog.Log(ctx, cfg.RootPath, "check", "sandbox self-test: "+sbxErr.Error())
+		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "check", "", "check4", "sandbox_selftest", "status", "failed", "error", sbxErr.Error())
+	}
+	trace.Log(ctx, "check4", "state", "done", "failed", check4Failed)
+
 	// ---- Summary ----
 	fmt.Println("\n=== Internal Consistency Check ===")
 	fmt.Printf("Packages checked: %d\n", packagesChecked)
@@ -775,6 +820,7 @@ func runCheck(
 	fmt.Printf("Check 3 — repository files missing or mismatched (report-only): %d\n", check3RepoFiles)
 	fmt.Printf("Check 3 — in repository, not marked published (report-only): %d\n", check3NotMarked)
 	fmt.Printf("Check 3 — marked published, not in repository (report-only): %d\n", check3NotInRepo)
+	fmt.Printf("Check 4 — build sandbox self-test failures (report-only): %d\n", check4Failed)
 
 	if len(findings) > 0 {
 		fmt.Println()
@@ -794,13 +840,14 @@ func runCheck(
 // which to fetch and queue for review. Never installs anything.
 func runUpdate(
 	cfg domain.WorkspaceConfig,
+	configPath string,
 	pkgCatalog catalog.PackageCatalog,
 	provider git.Provider,
 ) {
 	release := acquireWorkspaceLock(cfg, "aur-curator update")
 	defer func() { _ = release() }()
 
-	d := deps.NewDependencies(cfg, provider, pkgCatalog)
+	d := deps.NewDependencies(cfg, configPath, provider, pkgCatalog)
 	// No deadline on the run as a whole: each call that can hang has its
 	// own — every git call git.GitTimeout, the AUR request the client's
 	// timeout, each FetchAndReview its own GitTimeout (#409) — so a

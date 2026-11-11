@@ -1,6 +1,6 @@
 # Architecture: aur-curator
 
-> Last updated: 2026-10-10
+> Last updated: 2026-11-10
 > Status: Active
 > Companion docs: domain.md, interfaces.md
 > This document describes the architectural principles of aur-curator. It intentionally avoids implementation details that may change over time.
@@ -111,6 +111,18 @@ The application never:
 - install or uninstall packages — pacman does both, from the local
   pacman repository (`workflow.md` § Installation)
 - silently accept upstream changes
+
+---
+
+### Contain the Build
+
+Review decides what is built; it cannot stop the code a PKGBUILD runs
+while building. Every build therefore runs in a bubblewrap sandbox that
+sees only its own workspace as writable and none of the user's
+secrets, other packages or the local repository (`domain.md` § Build →
+Build Environment, #496). There is no way to build outside it: a
+sandbox that cannot be set up fails the build, never the rest of the
+app.
 
 ---
 
@@ -227,7 +239,7 @@ The lifecycle guides the user toward the next required action.
 | Git | Repository state |
 | Review engine | Present changes for human inspection |
 | Risk analyzer | Highlight potentially dangerous changes |
-| Builder | Produce packages |
+| Builder | Produce packages, inside the build sandbox |
 | Repository publisher | Maintain local pacman repository |
 | Bubble Tea UI | Present information and orchestrate workflows |
 

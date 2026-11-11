@@ -626,7 +626,34 @@ func (a App) statusBarState() widgets.StatusBarState {
 		}
 	}
 	state.LastResult = lastMsg
+	state.Warning = skippedWarning(a.dashboard.Skipped())
 	return state
+}
+
+// skippedWarningNames is how many skipped packages the status bar names
+// before "+N more".
+const skippedWarningNames = 3
+
+// skippedWarning is the status bar's text for packages the Dashboard's
+// last load left out (tui-dashboard-wireframe.md § 7, #513), or "" when
+// there are none.
+func skippedWarning(skipped []domain.PackageName) string {
+	n := len(skipped)
+	if n == 0 {
+		return ""
+	}
+	noun := "packages"
+	if n == 1 {
+		noun = "package"
+	}
+	names := make([]string, 0, skippedWarningNames+1)
+	for _, pkg := range skipped[:min(n, skippedWarningNames)] {
+		names = append(names, string(pkg))
+	}
+	if n > skippedWarningNames {
+		names = append(names, fmt.Sprintf("+%d more", n-skippedWarningNames))
+	}
+	return fmt.Sprintf("%d %s not loaded (see the error log): %s", n, noun, strings.Join(names, ", "))
 }
 
 // viewScreen renders the currently active screen only — split out from

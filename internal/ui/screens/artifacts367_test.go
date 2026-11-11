@@ -161,8 +161,8 @@ func TestArtifactLoadSuccess(t *testing.T) {
 	if !strings.Contains(view, "pkg-1.0-1-x86_64.pkg.tar.zst") {
 		t.Fatalf("view missing artifact filename:\n%s", view)
 	}
-	if !strings.Contains(view, "Artifact History") {
-		t.Fatalf("view missing artifact header:\n%s", view)
+	if strings.Contains(view, "Artifact History") {
+		t.Fatalf("the Artifact History heading was replaced by the build header (#507):\n%s", view)
 	}
 }
 
@@ -191,7 +191,7 @@ func TestRenderArtifactsViewPartialTwoRecords(t *testing.T) {
 
 	arts := []domain.Artifact{{Filename: "pkg-1.0.pkg.tar.zst"}}
 	err := errors.Join(errors.New("artifact a1: decode: x"), errors.New("artifact a2: read: y"))
-	view := renderArtifactsView(false, arts, err)
+	view := renderArtifactsView(false, arts, err, "")
 	if !strings.Contains(view, "2 artifact records could not be read") {
 		t.Fatalf("view missing record count:\n%s", view)
 	}
@@ -220,7 +220,7 @@ func TestRenderArtifactsViewPartialOneRecordEmptyList(t *testing.T) {
 
 	var arts []domain.Artifact
 	err := errors.Join(errors.New("artifact a1: decode: x"))
-	view := renderArtifactsView(false, arts, err)
+	view := renderArtifactsView(false, arts, err, "")
 	if !strings.Contains(view, "1 artifact record could not be read") {
 		t.Fatalf("view missing single-record header:\n%s", view)
 	}
@@ -240,7 +240,7 @@ func TestRenderArtifactsViewWholeStoreFailure(t *testing.T) {
 
 	var arts []domain.Artifact
 	err := errors.New("read artifacts directory: permission denied")
-	view := renderArtifactsView(false, arts, err)
+	view := renderArtifactsView(false, arts, err, "")
 	if !strings.Contains(view, "Could not load artifacts:") {
 		t.Fatalf("view missing full-load error:\n%s", view)
 	}
@@ -259,7 +259,7 @@ func TestRenderArtifactsViewSeparateLines(t *testing.T) {
 	t.Parallel()
 
 	err := errors.Join(errors.New("artifact a1: decode: x"), errors.New("artifact a2: read: y"))
-	view := renderArtifactsView(false, nil, err)
+	view := renderArtifactsView(false, nil, err, "")
 	lines := strings.Split(view, "\n")
 	i1, i2 := -1, -1
 	for i, line := range lines {
@@ -284,7 +284,7 @@ func TestRenderArtifactsViewSeparateLines(t *testing.T) {
 func TestRenderArtifactsViewEmptySuccess(t *testing.T) {
 	t.Parallel()
 
-	view := renderArtifactsView(false, []domain.Artifact{}, nil)
+	view := renderArtifactsView(false, []domain.Artifact{}, nil, "")
 	if !strings.Contains(view, "No artifacts recorded") {
 		t.Fatalf("view missing empty-state message:\n%s", view)
 	}

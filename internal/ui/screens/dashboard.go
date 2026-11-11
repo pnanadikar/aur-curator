@@ -29,9 +29,14 @@ import (
 // the curated package set discovered by a live filesystem scan.
 //
 // Skipped contains packages that were discovered but excluded from display
-// because they lack both origin and upstream remotes (i.e., they were not
-// added through the Import flow). Each skipped package has already had a
-// warning written to the persistent error log.
+// because their remotes could not be read: git failed on the clone, or an
+// origin or upstream remote is missing (i.e., they were not added through
+// the Import flow). Each skipped package has already had its reason
+// written to the persistent error log.
+//
+// Err ends the load: the catalog could not be read, git could not be
+// started, or the load was cancelled or timed out (#513). Packages and
+// Skipped are then empty.
 type PackagesLoadedMsg struct {
 	Packages []domain.PackageName
 	Skipped  []domain.PackageName
@@ -138,11 +143,14 @@ type DashboardModel struct {
 	aurChecked    bool  // an AUR check result has arrived (#331)
 	aurCheckErr   error // non-nil: the last AUR check failed as a whole
 	loadErr       error
-	loading       bool
-	allData       bool
-	lastRefresh   time.Time
-	lastHeight    int
-	width         int
+	// skipped are the packages the last load left out (PackagesLoadedMsg.
+	// Skipped). The App's status bar names them (#513).
+	skipped     []domain.PackageName
+	loading     bool
+	allData     bool
+	lastRefresh time.Time
+	lastHeight  int
+	width       int
 
 	// helpOpen shows the full action help in place of the compact bar
 	// (tui-package-details.md § Action Bar Convention).
@@ -332,20 +340,39 @@ func (m DashboardModel) loadPackagesCmd(ctx context.Context) tea.Cmd {
 	catalog := m.deps.Catalog
 	return func() tea.Msg {
 		trace.Log(ctx, "loadPackagesCmd", "state", "entered")
+		failed := func(err error) tea.Msg {
+			trace.Log(ctx, "loadPackagesCmd", "state", "failed", "error", err.Error())
+			_ = errorlog.Logf(ctx, m.deps.Config.RootPath, "catalog", "package list not loaded: %v", err)
+			return PackagesLoadedMsg{Err: err, TraceCtx: ctx}
+		}
 		pkgs, err := catalog.Packages(ctx)
+		if err != nil {
+			return failed(err)
+		}
 		var skipped []domain.PackageName
 		var valid []domain.PackageName
 		for _, pkg := range pkgs {
 			meta, metaErr := m.deps.Git.Metadata(ctx, pkg)
-			if metaErr != nil || !git.HasExpectedRemotes(*meta) {
+			// Git not starting, or the load's context ending, would fail
+			// every package the same way: end the load with that one
+			// cause instead of skipping each package (#513).
+			if metaErr != nil && (git.CannotStart(metaErr) || ctx.Err() != nil) {
+				return failed(metaErr)
+			}
+			if metaErr != nil || meta == nil || !git.HasExpectedRemotes(*meta) {
 				skipped = append(skipped, pkg)
 				trace.Log(ctx, "loadPackagesCmd", "pkg", pkg, "validated", "no")
+				reason := "no origin/upstream remotes found"
+				if metaErr != nil {
+					reason = metaErr.Error()
+				}
 				_ = errorlog.Logf(
 					ctx,
 					m.deps.Config.RootPath,
 					"catalog",
-					"skipped %q: no origin/upstream remotes found",
+					"skipped %q: %s",
 					pkg,
+					reason,
 				)
 				continue
 			}
@@ -372,7 +399,7 @@ func (m DashboardModel) loadPackagesCmd(ctx context.Context) tea.Cmd {
 			}
 			valid = append(valid, pkg)
 		}
-		return PackagesLoadedMsg{Packages: valid, Skipped: skipped, Err: err, TraceCtx: ctx}
+		return PackagesLoadedMsg{Packages: valid, Skipped: skipped, TraceCtx: ctx}
 	}
 }
 
@@ -399,6 +426,7 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 		m.loading = false
 		oldPackages := m.packages
 		m.packages = msg.Packages
+		m.skipped = msg.Skipped
 		m.loadErr = msg.Err
 		if err := msg.Err; err != nil {
 			return m, nil
@@ -798,6 +826,13 @@ func (m DashboardModel) listPageSize(height int) int {
 	return max(m.listRowsLeft(height), 1)
 }
 
+// Skipped returns the packages the last load left out because their
+// remotes could not be read; each reason is in the error log
+// (tui-dashboard-wireframe.md § 4, #513).
+func (m DashboardModel) Skipped() []domain.PackageName {
+	return m.skipped
+}
+
 // TooSmall reports whether not even one package row fits, so the App
 // shows the "terminal too small" line instead of the Dashboard
 // (tui-dashboard-wireframe.md § 6, #450). It is false until the package
@@ -825,6 +860,9 @@ func (m DashboardModel) View() string {
 		return fmt.Sprintf("Error loading packages: %v\n", m.loadErr)
 	}
 	if len(m.packages) == 0 {
+		if n := len(m.skipped); n > 0 {
+			return fmt.Sprintf("No packages loaded: %d left out (see the error log).\n", n)
+		}
 		return "No curated packages found.\n"
 	}
 

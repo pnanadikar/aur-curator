@@ -128,8 +128,14 @@ Columns, in order:
 | Local | Commits on local `master` not on upstream (below) |
 | Behind | `↑N`: commits behind upstream, i.e. fetched but not merged. Blank when 0 |
 
-Packages without both an `origin` and an `upstream` remote are left out of
-the table. Each one is written to the error log.
+A package whose remotes cannot be read is left out of the table: it has no
+`origin` or no `upstream` remote, or git fails on its clone. Each one is
+written to the error log with the reason (git's error, or "no
+origin/upstream remotes found"), and the status bar names them (§ 7).
+
+If git cannot be started at all (not installed, not on `PATH`), or the
+load times out or is cancelled, the list is not loaded and no package is
+shown (§ 6, #513): one cause is reported once, not as a skip per package.
 
 #### Header Row
 
@@ -327,8 +333,9 @@ state while retrying; otherwise the rows update in place.
 | Situation | Shown |
 | --- | --- |
 | Package list loading | `Loading packages...` |
-| Package list failed to load | `Error loading packages: <error>` (press `R` to retry) |
+| Package list failed to load, including git not starting (§ 4) | `Error loading packages: <error>` (press `R` to retry); the error is also written to the error log |
 | No curated packages | `No curated packages found.` |
+| Packages found, but every one left out (§ 4) | `No packages loaded: <N> left out (see the error log).` |
 | Review data still loading | A plain list of package names, each with its state or `(loading...)`; cards, toolbar and columns appear once every package's data has arrived |
 | Terminal too short for one package row | `Terminal too small: At least <N> lines and <M> columns recommended.` in place of the Dashboard |
 
@@ -361,7 +368,11 @@ Drawn by the App, around every screen, not by the Dashboard:
   (`developer-guide.md` § Operations Queue). `^T` cancels the running
   operation only; queued operations are not affected.
 - **Status bar**: the last line, under the Operations Panel. Shows `Idle`
-  when no operation is running.
+  when no operation is running. When the last package-list load left
+  packages out (§ 4), it also shows
+  `⚠ <N> package(s) not loaded (see the error log): a, b, c`, naming up to
+  three and then `+<M> more`, on every screen, until a load leaves none
+  out (#513).
 
 ---
 

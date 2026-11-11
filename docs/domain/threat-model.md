@@ -1,6 +1,6 @@
 # Threat Model
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 > Status: Active (#470)
 > Companion docs: risk-analysis.md, analyzer-specs.md, workflow.md
 
@@ -51,7 +51,7 @@ is not a goal.
 
 | Status | Meaning |
 | --- | --- |
-| v1 | aur-curator defends against this today |
+| v1, v1.x | aur-curator defends against this from that release on |
 | partial | a v1 defense covers some cases; the gap is named |
 | planned | in § Plan; `P1`–`P7` are its steps |
 | accepted | not defended, and deliberately so; the reason is given |
@@ -69,8 +69,9 @@ A package can attack at three points, and each needs its own defense:
 3. **Install-time:** what happens when pacman installs the result:
    `.install` scriptlets and the files the package places, both as root.
 
-The review gate defends against the first only. A v1 build runs with
-everything the user has, so the second is open today.
+The review gate defends against the first only. A v1 build ran with
+everything the user has; from v1.4 the build sandbox (P5) defends
+against the second, except for the network (P6).
 
 ### `-bin` packages
 
@@ -155,14 +156,18 @@ package's local repository at the merged commit, under
 (`internal/build/engine.go`). Anything the build code does, it does as
 the user.
 
+From v1.4 the build runs inside a bubblewrap sandbox (P5, #496,
+§ The Sandbox). The table keeps what a v1 build could reach; the Status
+column says what the sandbox takes away.
+
 | # | Threat | What a v1 build can reach | Status |
 | --- | --- | --- | --- |
-| B1 | Credential theft | `~/.ssh`, browser profiles, password-store files, the aur-curator config (`giteaToken`), and the inherited environment, including `AUR_CURATOR_GITEA_TOKEN` when set (the config example recommends it). Also the SSH and GPG agent sockets | partial: P1 removes secrets held in the environment (`AUR_CURATOR_*`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`) and the SSH agent's address; files in `$HOME` (the config's `giteaToken` among them) and the agent sockets at their default paths stay reachable. Planned: P5 (`$HOME` hidden, no session sockets) |
-| B2 | Persistence on the host | shell startup files, `systemd --user` units, autostart entries, `crontab` | planned: P5 |
-| B3 | Poisoning other curated packages | the whole `rootPath`, including other packages' clones and the `.aur-curator/` stores (review and build records), and `repositoryPath`, the repository pacman installs from. A build that writes a package into `repositoryPath` and updates its database gets it installed as root on the next `pacman -Syu`. Commits added to another package's clone are caught (S8); changes to the stores and to the repository are not | planned: P5 (only the build directory writable) |
+| B1 | Credential theft | `~/.ssh`, browser profiles, password-store files, the aur-curator config (`giteaToken`), and the inherited environment, including `AUR_CURATOR_GITEA_TOKEN` when set (the config example recommends it). Also the SSH and GPG agent sockets | v1.4 (P5): the build sees only `/usr`, `/etc`, `/opt`, `/sys` and `/var/lib/pacman` from the host, so `$HOME` (an empty tmpfs inside), other disks and the config file are absent; `/run` (every agent and bus socket) is an empty tmpfs; the environment is an allowlist; the build gets a fresh, empty session keyring. Before that, P1 removed secrets held in the environment (#473) |
+| B2 | Persistence on the host | shell startup files, `systemd --user` units, autostart entries, `crontab` | v1.4 (P5): nothing outside the build's workspace is writable, `$HOME` is a tmpfs discarded with the build, the user's systemd and the session bus are behind the hidden `/run`, and `crontab` is setuid, which `no_new_privs` defeats |
+| B3 | Poisoning other curated packages | the whole `rootPath`, including other packages' clones and the `.aur-curator/` stores (review and build records), and `repositoryPath`, the repository pacman installs from. A build that writes a package into `repositoryPath` and updates its database gets it installed as root on the next `pacman -Syu`. Commits added to another package's clone are caught (S8); changes to the stores and to the repository are not | v1.4 (P5): only the build's workspace is writable; the rest of `rootPath` and all of `repositoryPath` are absent |
 | B4 | Exfiltration | the network, for the whole build | planned: P6 (network for fetching sources only) |
-| B5 | Other processes of the user | signals and `ptrace` on same-user processes; the session D-Bus (including a secret service); the display server | partial: P1 removes the D-Bus and display addresses; the sockets stay reachable at their default paths. Planned: P5 (separate namespaces, no session sockets) |
-| B6 | Privilege escalation | `sudo -n` succeeds if a sudo timestamp is still valid for the terminal aur-curator runs in; setuid binaries on the host | planned: P5 (`no_new_privs`, `nosuid`). Until then: do not run `sudo` in that terminal before building |
+| B5 | Other processes of the user | signals and `ptrace` on same-user processes; the session D-Bus (including a secret service); the display server | partial, v1.4 (P5): separate user, PID, IPC, UTS and cgroup namespaces, so no other process is visible to signal or trace; `/run` and `/tmp` are empty tmpfs mounts, so no session bus, agent or X11 path socket is reachable. Gap: abstract Unix sockets (`@` names, such as an X server's `@/tmp/.X11-unix/X0`) belong to the network namespace, which the build shares until P6. The build log lists the ones it can see. Reaching one is not using it: an X server or session manager that needs a cookie refuses the build, because the cookies (`~/.Xauthority`, `~/.ICEauthority`, `/run/user/<uid>/xauth_*`) are hidden; one that admits the user by identity (`xhost` lists `SI:localuser:<user>`) accepts it |
+| B6 | Privilege escalation | `sudo -n` succeeds if a sudo timestamp is still valid for the terminal aur-curator runs in; setuid binaries on the host | v1.4 (P5): `no_new_privs`, so setuid binaries (`sudo` among them) gain nothing; sudo's timestamps under `/run/sudo` are hidden; no nested user namespaces |
 | B7 | Resource exhaustion | CPU, memory, disk | partial: a build can be cancelled (X), which ends its whole process group; no limits (§ Later) |
 | B8 | Artifacts that differ from what the source says | The build decides what goes into the package | partial: Confirm is a human gate with no verification; planned: P7 |
 
@@ -170,6 +175,50 @@ B3 is the most serious: it turns one hostile build into a root
 installation of something nobody reviewed, and it bypasses the review
 gate for every other package. B1 is next: the Gitea token gives write
 access to every curated repository.
+
+### The Sandbox
+
+A v1.4 build runs `makepkg` under bubblewrap (P5, #496). The rules are in
+`domain.md` § Build → Build Environment; this section says what they are
+for and what they leave open.
+
+- **What the build sees:** an empty root with only `/usr`, `/etc`,
+  `/opt`, `/sys` and `/var/lib/pacman` added read-only; empty tmpfs
+  mounts at `/tmp`, `/var/tmp`, `/run` and `$HOME`; its own workspace
+  writable; the config file and `activityLogPath` unreadable;
+  read-only copies of the user's makepkg configuration file and of a
+  keybox holding only the PKGBUILD's `validpgpkeys`.
+- **Why `/run` and not only `/run/user/<uid>`:** a read-only bind does
+  not stop `connect()` on a Unix socket. `/run` also holds `docker.sock`
+  (root, to a member of the `docker` group), the system bus, libvirt and
+  systemd's sockets.
+- **Why an allowlist and not `/` minus a list:** the user's own files
+  are not only in `$HOME`. A btrfs top level mounted under `/mnt` shows
+  every subvolume, the home subvolume among them; data and backup disks
+  sit under `/mnt`, `/media` or `/srv`; the journal under `/var/log` is
+  readable by members of `wheel`, `adm` and `systemd-journal`. A deny
+  list misses the next mount silently; an allowlist hides it by
+  default, and a path a build really needs fails loudly.
+- **Why a fresh session keyring:** the kernel session keyring is shared
+  into a user namespace; the user keyring is not.
+- **The self-test.** Before every build, and as `check` 4, aur-curator
+  checks from inside the sandbox that no Unix socket accepts a
+  connection, the keyrings are empty, `no_new_privs` is set, a user
+  namespace cannot be created, the environment is exactly the
+  allowlist, and the hidden paths are hidden; and from the host that
+  writes into `rootPath` and `repositoryPath` did not land. A failure
+  fails the build: there is no unsandboxed fallback.
+- **Not covered:** the network (P6, B4), abstract Unix sockets (B5),
+  system calls (no seccomp filter yet), resource limits (B7), and
+  anything that escapes bubblewrap or the kernel (§ Scope). The build
+  runs with the user's uid and groups (supplementary groups show as
+  `nobody` in the user namespace but still grant access), so inside
+  `/usr`, `/etc`, `/opt`, `/sys` and `/var/lib/pacman` it reads
+  whatever the user can: world-readable system files, and anything
+  there readable through the user's groups or owned by the user. A
+  `--trace` or `--debug-log` file is readable only if given a path in
+  one of those trees, until both flags write to fixed files under
+  `.aur-curator/` (#510, v2).
 
 ### The network
 
@@ -198,7 +247,7 @@ networked `prepare()`.
 | I1 | `.install` scriptlets run as root | The Shell analyzer scans every added line of `.install`, not only function bodies; review | v1; P4 flags a `.install` added or changed (`install_changed`, #476) |
 | I2 | Files placed with special power: setuid binaries, pacman hooks, systemd units, files under `/etc`, `sudoers.d`, sysusers, udev rules | Confirm, a human gate with no verification (`domain.md` § Package) | planned: P7 (list them at Confirm; informational, never blocking) |
 | I3 | The installed program itself, run by the user | Out of aur-curator's reach: trust in the upstream project or vendor, established at review (S2, S5) | accepted |
-| I4 | Something other than a published build is in the local repository | Only Publish writes `repositoryPath`, by design; nothing stops another writer (B3). The repository is not signed, and its `pacman.conf` entry uses `SigLevel = Optional TrustAll`, so pacman installs an unsigned package from it without a prompt | planned: P5 closes the build route; repository signing matters once more than one machine uses the repository (§ Later) |
+| I4 | Something other than a published build is in the local repository | Only Publish writes `repositoryPath`, by design; nothing stops another writer (B3). The repository is not signed, and its `pacman.conf` entry uses `SigLevel = Optional TrustAll`, so pacman installs an unsigned package from it without a prompt | v1.4 (P5) closes the build route; repository signing matters once more than one machine uses the repository (§ Later) |
 
 ## Plan
 
@@ -212,12 +261,12 @@ format, so each can ship as a v1.x minor release.
 | P2 | **Analyzer scope.** The Shell analyzer scans every added PKGBUILD line, not three function bodies: top-level code runs when `makepkg` sources the file, and `pkgver()`, `check()` and `package_*()` run at build time. The Findings tab says that analyzers scan added lines and that the diff is the review (#474) | small | § Analyzer gaps, the first |
 | P3 | **No silent Low.** A test that every category an analyzer emits is in the severity table; an unmapped category resolves to High, is written to the error log and is reported to the user as an internal inconsistency (#475) | small | `risk-analysis.md` § Unmapped categories |
 | P4 | **Signals from the existing PKGBUILD parser,** each Medium: `.install` added or changed; a key added to `validpgpkeys`, with or without one removed; an entry added to `depends`, `makedepends`, `checkdepends` or `optdepends`. Medium becomes reachable (#23) (#476) | small–medium | S1, S5, S7, I1, in part |
-| P5 | **Sandboxed build** (bwrap): `/` read-only; only the build directory writable; `$HOME` on a tmpfs with the GPG public keyring read-only; no session sockets (`/run/user/<uid>`: the SSH and GPG agents, the session bus); an allowlisted environment; separate namespaces; `no_new_privs`. If the sandbox cannot be set up, the build fails; there is no unsandboxed fallback. Adversarial fixture builds that try to read a dummy secret, write `rootPath`, write `repositoryPath`, read the token and run `sudo -n`, each expected to fail | medium–high | B1, B2, B3, B5, B6 |
+| P5 | **Sandboxed build** (bwrap, #496, v1.4): an empty root with only `/usr`, `/etc`, `/opt`, `/sys` and `/var/lib/pacman` added read-only, so everything else (`/home`, `/mnt`, `/srv`, `/var/log`, `rootPath`, `repositoryPath`, any other mount) is absent; only the build's workspace writable; `$HOME`, `/run`, `/tmp` and `/var/tmp` on empty tmpfs mounts; the config file and activity log hidden; a keybox of the PKGBUILD's `validpgpkeys` read-only; an allowlisted environment; a fresh session keyring; separate namespaces; `no_new_privs`; no nested user namespaces. A self-test before every build and as `check` 4. If the sandbox cannot be set up or the self-test fails, the build fails; there is no unsandboxed fallback. Adversarial fixture builds that try to read a dummy secret, write `rootPath` and `repositoryPath`, read the token, run `sudo -n`, connect to a socket, read the session keyring and create a user namespace, each expected to fail (§ The Sandbox) | medium–high | B1, B2, B3, B6; B5 but abstract sockets |
 | P6 | **Network for fetching only** (§ The network) | medium | B4 |
 | P7 | **Confirm inspector.** Read the built archive without extracting it; list setuid and setgid files, `.INSTALL`, pacman hooks, systemd units, files under `/etc`, `sudoers.d`, sysusers and udev rules, and the archive's sha256. Informational, never blocking. Changes the domain rule "Confirm performs no verification": an ADR first | medium | I2, B8 |
 
-P1–P4 are independent of each other. P5 needs an ADR ("sandboxed builds
-via bwrap") and a plan doc; P6 builds on P5.
+P1–P4 are independent of each other. P5's ADR is #496 and its plan
+`docs/plans/496-sandboxed-builds.md`; P6 builds on P5.
 
 **Inputs for the P5 and P6 plans.** From RUA, read only: its bwrap
 argument list; how it exposes the GPG keyring for `validpgpkeys`; how it

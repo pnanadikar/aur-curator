@@ -12,7 +12,7 @@ PREFIX ?= $(HOME)/.local
 VERSION := $(shell git describe --tags --match 'v[0-9]*' --dirty --always)
 VERSION_LDFLAG := -X 'github.com/pramod/aur-curator/internal/version.Version=$(VERSION)'
 
-.PHONY: help build debug-build install uninstall test-build test-ui test test-race lint tracecheck vuln vet vet-all run fmt clean release
+.PHONY: help build debug-build install uninstall test-build test-ui test test-race test-sandbox lint tracecheck vuln vet vet-all run fmt clean release
 
 help:
 	@printf '%s\n' \
@@ -25,6 +25,7 @@ help:
 		'  test-ui      Run go test ./internal/ui/... -v' \
 		'  test         Run go test ./...' \
 		'  test-race    Run go test -race ./... (needs cgo: gcc from base-devel)' \
+		'  test-sandbox Build hostile fixture PKGBUILDs in the real sandbox (bwrap, makepkg; not as root)' \
 		'  lint         Run tracecheck, then golangci-lint run ./... (gosec included)' \
 		'  tracecheck   Report trace.Log, activitylog.Log and procgroup.Run calls with unpaired key/value args' \
 		'  vuln         Run govulncheck (pinned) over ./...; needs the network' \
@@ -63,6 +64,11 @@ test:
 
 test-race:
 	CGO_ENABLED=1 go test -race ./...
+
+# The adversarial fixtures of P5 (#496): real makepkg in the real bwrap.
+# They fail, never skip, when either is missing.
+test-sandbox:
+	go test -count=1 -tags sandboxfixtures -run 'TestSandboxFixture' -v ./internal/build/
 
 lint: tracecheck
 	golangci-lint run ./...

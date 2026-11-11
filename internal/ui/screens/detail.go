@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,9 +42,13 @@ type detailLoadedMsg struct {
 	build            *domain.Build
 	lastSuccessBuild *domain.Build
 	isMerged         bool
-	headCommit       string
-	warnings         []string
-	err              error
+	// mergeKnown is true when isMerged was read: the review has an
+	// upstream commit and IsMerged succeeded. The update note never
+	// reads isMerged otherwise (#507).
+	mergeKnown bool
+	headCommit string
+	warnings   []string
+	err        error
 }
 
 // DetailTab identifies a tab within the Package Details screen.
@@ -158,6 +163,9 @@ type buildLogLoadedMsg struct {
 	content string
 	notice  string
 	err     error
+	// build is the record whose log content is, read with it, so the
+	// header names the build the log belongs to (#507).
+	build *domain.Build
 }
 
 // artifactLoadedMsg carries the artifact history for a package. artifacts and
@@ -167,6 +175,12 @@ type artifactLoadedMsg struct {
 	pkg       domain.PackageName
 	artifacts []domain.Artifact
 	err       error
+	// build is the last successful build, read with the artifacts so
+	// the header never compares them with a record from another moment
+	// (#507). nil when there is none, or when it could not be read:
+	// buildErr then says why.
+	build    *domain.Build
+	buildErr error
 }
 
 // opFailure records a post-load operation failure that must be surfaced
@@ -211,11 +225,14 @@ type PackageDetailModel struct {
 	build            *domain.Build
 	lastSuccessBuild *domain.Build
 	isMerged         bool
+	mergeKnown       bool
 	headCommit       string
 
 	buildLogContent string
 	buildLogNotice  string
 	buildLogErr     error
+	// buildLogBuild is the record buildLogContent belongs to (#507).
+	buildLogBuild *domain.Build
 	// followLog jumps to the bottom of the build log once the reload
 	// that End started arrives (#343).
 	followLog bool
@@ -227,6 +244,10 @@ type PackageDetailModel struct {
 	artifactHistory  []domain.Artifact
 	artifactsLoading bool
 	artifactErr      error
+	// artifactBuild and artifactBuildErr are artifactLoadedMsg's build
+	// and buildErr (#507).
+	artifactBuild    *domain.Build
+	artifactBuildErr error
 	contentPane      widgets.ContentPane
 	tabs             widgets.TabBar
 	keys             keyMap
@@ -324,13 +345,13 @@ func (m PackageDetailModel) loadDetailCmd() tea.Cmd {
 			}
 		}
 
-		var isMerged bool
+		var isMerged, mergeKnown bool
 		if review != nil && review.UpstreamCommit != "" {
 			merged, err := m.deps.Git.IsMerged(ctx, m.pkgName, review.UpstreamCommit)
 			if err != nil {
 				warn("IsMerged", "merge state", err)
 			} else {
-				isMerged = merged
+				isMerged, mergeKnown = merged, true
 			}
 		}
 
@@ -355,6 +376,7 @@ func (m PackageDetailModel) loadDetailCmd() tea.Cmd {
 			build:            build,
 			lastSuccessBuild: lastSuccessBuild,
 			isMerged:         isMerged,
+			mergeKnown:       mergeKnown,
 			headCommit:       headCommit,
 			warnings:         warnings,
 		}
@@ -418,6 +440,7 @@ func (m PackageDetailModel) loadBuildLogCmd() tea.Cmd {
 			return out
 		}
 		out.content = content
+		out.build = build
 		return out
 	}
 }
@@ -467,6 +490,7 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.build = msg.build
 		m.lastSuccessBuild = msg.lastSuccessBuild
 		m.isMerged = msg.isMerged
+		m.mergeKnown = msg.mergeKnown
 		m.headCommit = msg.headCommit
 		m.warnings = msg.warnings
 		m.refreshContent()
@@ -529,11 +553,14 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.buildLogContent = ""
 		m.buildLogNotice = ""
 		m.buildLogErr = nil
+		m.buildLogBuild = nil
 		m.followLog = false
 		m.buildRequestedAt = time.Time{}
 		m.artifactHistory = nil
 		m.artifactsLoading = false
 		m.artifactErr = nil
+		m.artifactBuild = nil
+		m.artifactBuildErr = nil
 		m.refreshContent()
 		return m, m.loadDetailCmd()
 	case buildLogLoadedMsg:
@@ -544,6 +571,7 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.buildLogContent = msg.content
 		m.buildLogNotice = msg.notice
 		m.buildLogErr = msg.err
+		m.buildLogBuild = msg.build
 		m.refreshContent()
 		if m.followLog {
 			m.followLog = false
@@ -557,6 +585,8 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.artifactsLoading = false
 		m.artifactHistory = msg.artifacts
 		m.artifactErr = msg.err
+		m.artifactBuild = msg.build
+		m.artifactBuildErr = msg.buildErr
 		m.refreshContent()
 		return m, nil
 	}
@@ -1004,8 +1034,22 @@ func (m PackageDetailModel) loadArtifactHistoryCmd() tea.Cmd {
 			trace.Log(ctx, "artifacts_load", "pkg", pkg, "error", err.Error())
 			_ = errorlog.Log(ctx, d.Config.RootPath, "artifacts", fmt.Sprintf("%s: %v", pkg, err))
 		}
+		out = artifactLoadedMsg{pkg: pkg, artifacts: arts, err: err}
 
-		return artifactLoadedMsg{pkg: pkg, artifacts: arts, err: err}
+		// The build the artifacts came from, for the header (#507).
+		if len(arts) > 0 && d.BuildEngine.BuildStore() != nil {
+			b, berr := d.BuildEngine.BuildStore().GetLastSuccess(pkg)
+			switch {
+			case errors.Is(berr, domain.ErrNotFound):
+			case berr != nil:
+				out.buildErr = berr
+				trace.Log(ctx, "artifacts_load", "pkg", pkg, "lastSuccess", "unreadable", "error", berr.Error())
+				_ = errorlog.Log(ctx, d.Config.RootPath, "artifacts", fmt.Sprintf("%s: read last successful build: %v", pkg, berr))
+			default:
+				out.build = b
+			}
+		}
+		return out
 	}
 }
 
@@ -1048,27 +1092,126 @@ func renderCommitsContent(commits []git.Commit) string {
 }
 
 // renderBuildLogView renders the Build Log tab: an error, a notice, or
-// the log itself (#343).
-func renderBuildLogView(content, notice string, err error) string {
+// the log itself under header (#343, #507).
+func renderBuildLogView(content, notice string, err error, header string) string {
 	switch {
 	case err != nil:
 		return theme.ErrorStyle().Render("Could not load the build log: " + err.Error())
 	case notice != "":
 		return theme.SubtleStyle().Render(notice)
 	}
-	return renderBuildLogContent(content)
+	return renderBuildLogContent(header, content)
 }
 
-func renderBuildLogContent(buildLogContent string) string {
+// renderBuildLogContent renders the log under header, which ends in its
+// own blank line; header is "" when the build is not known.
+func renderBuildLogContent(header, buildLogContent string) string {
 	if buildLogContent == "" {
 		return theme.SubtleStyle().Render("No build log available")
 	}
+	return header + sanitize.ForLogDisplay(buildLogContent)
+}
 
-	var b strings.Builder
-	b.WriteString(theme.HeaderStyle().Render("Build Log") + "\n")
-	b.WriteString("\n")
-	b.WriteString(sanitize.ForLogDisplay(buildLogContent))
-	return b.String()
+// buildHeaderTime is the start-time layout in build headers: local time,
+// e.g. "6 Nov 2026 20:13" (tui-package-details.md § Build Log).
+const buildHeaderTime = "2 Jan 2006 15:04"
+
+// shortCommit is the 8-character form of a commit used in build headers
+// and update notes, as on the Commits tab.
+func shortCommit(commit string) string {
+	if len(commit) > 8 {
+		return commit[:8]
+	}
+	return commit
+}
+
+// buildIdentity is a build's header line: its commit, start time and,
+// with withStatus, its status (tui-package-details.md § Build Log, § Artifacts,
+// #507).
+func buildIdentity(b *domain.Build, withStatus bool) string {
+	commit := shortCommit(b.ReviewedCommit)
+	if commit == "" {
+		commit = "—"
+	}
+	s := commit + " · " + b.StartTime.Local().Format(buildHeaderTime)
+	if withStatus {
+		s += " · " + string(b.Status)
+	}
+	return s
+}
+
+// updateNote is the Update Note for a build of builtCommit
+// (tui-package-details.md § Update Note, #507), or "" when the build is
+// current or the inputs cannot tell. An empty headCommit or an unknown
+// merge state skips its row: the note is never a guess.
+func updateNote(builtCommit, headCommit string, review *domain.Review, mergeKnown, isMerged bool) string {
+	if builtCommit == "" {
+		return ""
+	}
+	if headCommit != "" && headCommit != builtCommit {
+		return fmt.Sprintf("An update merged since (%s) is not built yet.", shortCommit(headCommit))
+	}
+	if review != nil && review.UpstreamCommit != "" && review.Status != domain.ReviewRejected && mergeKnown && !isMerged {
+		return fmt.Sprintf("An update fetched since (%s) is not built yet.", shortCommit(review.UpstreamCommit))
+	}
+	return ""
+}
+
+// renderBuildHeader renders a header line, the note under it if any, and
+// a blank line.
+func renderBuildHeader(identity, note string) string {
+	s := theme.HeaderStyle().Render(identity) + "\n"
+	if note != "" {
+		s += theme.ErrorStyle().Render(note) + "\n"
+	}
+	return s + "\n"
+}
+
+// buildLogHeader is the Build Log tab's header for the record whose log
+// is shown, or "" when there is none (#507).
+func (m PackageDetailModel) buildLogHeader() string {
+	b := m.buildLogBuild
+	if b == nil {
+		return ""
+	}
+	return renderBuildHeader(buildIdentity(b, true), m.updateNote(b))
+}
+
+// artifactsHeader is the Artifacts tab's header: the last successful
+// build when every artifact came from it; otherwise a ⚠ line, since the
+// records disagree, which aur-curator never does itself (#507). "" with
+// no artifacts.
+func (m PackageDetailModel) artifactsHeader() string {
+	if len(m.artifactHistory) == 0 {
+		return ""
+	}
+	if m.artifactBuildErr != nil {
+		return theme.ErrorStyle().Render("⚠ Could not read the last successful build: "+
+			strings.ReplaceAll(m.artifactBuildErr.Error(), "\n", " ")) + "\n\n"
+	}
+	b := m.artifactBuild
+	var others []string
+	for _, a := range m.artifactHistory {
+		if (b == nil || a.BuildID != b.ID) && !slices.Contains(others, string(a.BuildID)) {
+			others = append(others, string(a.BuildID))
+		}
+	}
+	if len(others) > 0 {
+		last := "none recorded"
+		if b != nil {
+			last = string(b.ID)
+		}
+		return theme.ErrorStyle().Render(fmt.Sprintf(
+			"⚠ These artifacts are from build %s, not the last successful build (%s). "+
+				"This should not happen: please file a bug report with this line.",
+			strings.Join(others, ", "), last)) + "\n\n"
+	}
+	return renderBuildHeader(buildIdentity(b, false), m.updateNote(b))
+}
+
+// updateNote is updateNote for build b with this screen's commits.
+func (m PackageDetailModel) updateNote(b *domain.Build) string {
+	return updateNote(b.ReviewedCommit, m.headCommit, m.review, m.mergeKnown, m.isMerged)
 }
 
 // refreshContent sets the content pane from the current tab's data.
@@ -1083,9 +1226,9 @@ func (m *PackageDetailModel) refreshContent() {
 			m.contentPane.SetContent(theme.SubtleStyle().Render("Loading build log…"))
 			return
 		}
-		m.contentPane.SetContent(renderBuildLogView(m.buildLogContent, m.buildLogNotice, m.buildLogErr))
+		m.contentPane.SetContent(renderBuildLogView(m.buildLogContent, m.buildLogNotice, m.buildLogErr, m.buildLogHeader()))
 	case TabArtifactHistory:
-		m.contentPane.SetContent(renderArtifactsView(m.artifactsLoading, m.artifactHistory, m.artifactErr))
+		m.contentPane.SetContent(renderArtifactsView(m.artifactsLoading, m.artifactHistory, m.artifactErr, m.artifactsHeader()))
 	default:
 		m.contentPane.SetContent(m.renderSummaryTab())
 	}
@@ -1104,8 +1247,8 @@ func (m PackageDetailModel) tabLoadCmd() tea.Cmd {
 
 // renderArtifactsView renders the Artifacts tab: a loading indicator, a
 // whole-store error, partial-record errors with per-record lines, or the
-// normal artifact content.
-func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error) string {
+// normal artifact content under header (#507).
+func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error, header string) string {
 	if loading {
 		return theme.SubtleStyle().Render("Loading artifacts…")
 	}
@@ -1131,7 +1274,7 @@ func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error) s
 			if len(artifacts) == 0 {
 				b.WriteString(theme.SubtleStyle().Render("No artifacts recorded for this package"))
 			} else {
-				b.WriteString(renderArtifactHistoryContent(artifacts))
+				b.WriteString(renderArtifactHistoryContent(header, artifacts))
 			}
 			return b.String()
 		}
@@ -1143,17 +1286,18 @@ func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error) s
 	if len(artifacts) == 0 {
 		return theme.SubtleStyle().Render("No artifacts recorded for this package")
 	}
-	return renderArtifactHistoryContent(artifacts)
+	return renderArtifactHistoryContent(header, artifacts)
 }
 
-func renderArtifactHistoryContent(artifacts []domain.Artifact) string {
+// renderArtifactHistoryContent renders the artifacts under header, which
+// ends in its own blank line (#507).
+func renderArtifactHistoryContent(header string, artifacts []domain.Artifact) string {
 	if len(artifacts) == 0 {
 		return theme.SubtleStyle().Render("No artifacts recorded for this package")
 	}
 
 	var b strings.Builder
-	b.WriteString(theme.HeaderStyle().Render("Artifact History") + "\n")
-	b.WriteString("\n")
+	b.WriteString(header)
 
 	for i, art := range artifacts {
 		fmt.Fprintf(&b, "  %d. %s (%s) %s\n", i+1, art.Filename, art.Architecture, art.Version)

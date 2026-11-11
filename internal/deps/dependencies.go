@@ -3,6 +3,8 @@ package deps
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/pramod/aur-curator/internal/analyzer"
@@ -37,6 +39,9 @@ type Dependencies struct {
 	BuildEngine *build.Engine
 	Config      domain.WorkspaceConfig
 	AUR         *aurinfo.Client
+	// SandboxPaths are what the build sandbox is made from; check 4
+	// self-tests the sandbox with them (#496).
+	SandboxPaths build.SandboxPaths
 }
 
 // NewDependencies constructs all injected services required by the
@@ -45,6 +50,7 @@ type Dependencies struct {
 // point for both CLI (runImport) and TUI (runTUI) entry paths.
 func NewDependencies(
 	cfg domain.WorkspaceConfig,
+	configPath string,
 	provider git.Provider,
 	pkgCatalog catalog.PackageCatalog,
 ) Dependencies {
@@ -63,7 +69,17 @@ func NewDependencies(
 	// The review engine reads the AUR record during analysis (#495).
 	reviewEngine := review.NewEngine(provider, reviewStore, analyzers, policyEngine, review.WithAURLookup(aurClient))
 
-	makepkgBuilder := build.MakepkgBuilder{}
+	// Builds run in the bubblewrap sandbox (#496). A path that cannot be
+	// found stays empty, and the build fails saying which.
+	sandboxPaths := build.SandboxPaths{
+		RootPath:       cfg.RootPath,
+		RepositoryPath: cfg.RepositoryPath,
+		ConfigFile:     configPath,
+		ActivityLog:    cfg.ActivityLogPath,
+		Helper:         helperPath(),
+		Home:           homeDir(),
+	}
+	makepkgBuilder := build.NewMakepkgBuilder(sandboxPaths)
 	buildEngine := build.NewEngine(makepkgBuilder, buildStore, artStore, provider, paths)
 
 	return Dependencies{
@@ -85,5 +101,30 @@ func NewDependencies(
 		BuildEngine: buildEngine,
 		Config:      cfg,
 		AUR:         aurClient,
+
+		SandboxPaths: sandboxPaths,
 	}
+}
+
+// helperPath is this binary, resolved through symlinks so the sandbox
+// can bind the real file. "" when it cannot be found.
+func helperPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	real, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return ""
+	}
+	return real
+}
+
+// homeDir is the user's home directory, or "" when unknown.
+func homeDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(h)
 }

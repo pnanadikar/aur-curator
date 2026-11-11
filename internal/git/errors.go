@@ -1,6 +1,17 @@
 package git
 
-import "errors"
+import (
+	"errors"
+	"os/exec"
+)
+
+// CannotStart reports whether err says git itself could not be started:
+// not found on PATH, or not executable. Unlike git exiting with an error,
+// this fails every git call, not one repository's (#513).
+func CannotStart(err error) bool {
+	var execErr *exec.Error
+	return errors.As(err, &execErr)
+}
 
 // Sentinel errors returned by Import and Remove.
 var (

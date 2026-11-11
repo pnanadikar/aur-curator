@@ -51,6 +51,10 @@ published, you install and upgrade it with plain pacman.
 
 - Arch Linux (or a derivative with pacman).
 - `base-devel` (for `makepkg`), `git` and `pacman` (for `repo-add`).
+- `bubblewrap` 0.8 or newer, and a kernel that lets an unprivileged
+  user create user namespaces (Arch's stock kernel does): every build
+  runs in a bubblewrap sandbox, and there is no way to build without
+  it. `aur-curator <config-file> check` says whether the sandbox works.
 - Go 1.26 or newer, to build aur-curator.
 - A [Gitea](https://about.gitea.com/) instance, an organization on it to
   hold the curated package repositories, and an account that can create
@@ -148,7 +152,7 @@ Optional settings:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `repoDBName` | `custom.db.tar.gz` | Repository database file name. The part before `.db` is the repository name in `pacman.conf`. |
-| `builderBackend` | `makepkg` | Build backend. `makepkg` is currently the only one; any other value is an error. |
+| `builderBackend` | `makepkg` | Build backend. `makepkg`, always in the bubblewrap sandbox, is the only one; any other value is an error. |
 | `autoMerge` | `false` | Merge as soon as you Approve a review, instead of waiting for you to press Merge. Nothing is ever merged without an Approve. |
 | `autoAnalyzeAfterImport` | `false` | Run the analyzers right after an Import. |
 | `activityLogPath` | `<rootPath>/.aur-curator/activity.log` | Human-readable log of every import, decision, merge, build, confirm and publish. |
@@ -235,7 +239,12 @@ Run `aur-curator --help` for flags and details.
    pushes it to Gitea.
 
 5. **Build.** aur-curator builds the package with `makepkg` from a clean
-   copy of exactly the commit you merged.
+   copy of exactly the commit you merged, in a sandbox that sees only
+   the system (`/usr`, `/etc`, `/opt`, the pacman database) and the
+   build's own directory: not your home directory, other disks, your
+   other packages, the repository or your session's sockets. It still has the network. Toolchains installed
+   only under your home directory (`~/.cargo/bin`, `~/go/bin`) are not
+   visible to it, and language caches there are not reused.
 
 6. **Confirm** the build. This is an explicit acknowledgement that the
    built package is what you want to publish; aur-curator does not

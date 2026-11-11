@@ -14,10 +14,14 @@ type StatusBarState struct {
 	ActiveOp   string // empty when idle
 	Pending    int    // total pending across all lanes
 	LastResult string // most recent completed/failed result
+	// Warning is a standing problem shown after the other parts, such as
+	// packages the Dashboard could not load (#513). Empty: none.
+	Warning string
 }
 
 // RenderStatusBar renders one line showing active operation, pending count,
-// and last result. When idle, shows "Idle" with total pending count.
+// last result and any warning. When idle, shows "Idle" with total pending
+// count.
 func RenderStatusBar(width int, state StatusBarState) string {
 	var parts []string
 
@@ -33,6 +37,10 @@ func RenderStatusBar(width int, state StatusBarState) string {
 
 	if state.LastResult != "" {
 		parts = append(parts, theme.SubtleStyle().Render("• "+state.LastResult))
+	}
+
+	if state.Warning != "" {
+		parts = append(parts, theme.ErrorStyle().Render("⚠ "+state.Warning))
 	}
 
 	return lipgloss.NewStyle().

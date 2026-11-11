@@ -1,6 +1,6 @@
 # Domain Model: aur-curator
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 > Status: Active
 > Companion docs: architecture.md, interfaces.md, workflow.md, risk-analysis.md
 > Code: `internal/domain`
@@ -538,7 +538,7 @@ Code: `build.go`.
 | --- | --- | --- |
 | id | Build identifier | Stored |
 | packageName | Owning package | Stored |
-| backend | Builder used (`makepkg`) | Stored |
+| backend | Builder used: `makepkg+bwrap`, makepkg in the sandbox (§ Build Environment, #496). Builds before #496 say `makepkg` | Stored |
 | status | Pending / Running / Success / Failed | Stored |
 | startTime | Build start | Stored |
 | endTime | Build completion (nil while running) | Stored |
@@ -563,14 +563,125 @@ the manual Confirm and Publish steps.
 
 ### Build Environment
 
-makepkg runs with the user's environment minus a denylist (#473):
-`AUR_CURATOR_*` (the Gitea token), names ending in `_TOKEN`, `_SECRET`
-or `_PASSWORD`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`,
-`DBUS_SESSION_BUS_ADDRESS`, `SSH_ASKPASS`, `SUDO_ASKPASS`, `GIT_ASKPASS`,
-`DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY`. The build log's first line
-names the variables removed, never their values, or says `none`.
-Removing a socket's address does not hide the socket: a build that knows
-the default path still reaches it (`threat-model.md` B1, B5).
+Every build runs `makepkg` inside a bubblewrap (`bwrap`) sandbox (#496;
+why: `threat-model.md` § The Sandbox). There is no unsandboxed backend:
+if the sandbox cannot be set up, or its self-test fails, the build
+fails and nothing runs.
+
+**Filesystem.**
+
+| Path | Inside the sandbox |
+| --- | --- |
+| `/usr`, `/etc`, `/opt`, `/sys`, `/var/lib/pacman` | Read-only |
+| `/bin`, `/lib`, `/lib64`, `/sbin` | Symlinks into `/usr`, as on Arch |
+| `/dev`, `/proc` | Fresh (`--dev`, `--proc`) |
+| `/tmp`, `/var/tmp`, `/run`, `$HOME` | Empty tmpfs mounts; writes are discarded with the build |
+| The build's workspace (`builds/<id>/work/src`) | Writable, at its host path; the only writable host path |
+| Everything else: `/home`, `/root`, `/mnt`, `/media`, `/srv`, the rest of `/var`, `rootPath` and `repositoryPath` apart from the workspace, any other mount | Absent. The root is empty, and only the paths in this table are added |
+| The config file, `activityLogPath`, `repositoryPath` | Absent; when one is under a read-only tree above, `/dev/null` (a file) or an empty tmpfs (a directory) is put over it |
+| The user's makepkg configuration file | Read-only, at the path makepkg reads it from inside (below) |
+| The PKGBUILD's keys | Read-only, as `$HOME/.gnupg/pubring.kbx` (below) |
+| The aur-curator binary | Read-only; it starts the build inside (below) |
+| `/etc/resolv.conf`, when it is a symlink into `/run` (systemd-resolved) | Its target is bound back read-only, so DNS still works; the `sockets` check skips only that path |
+
+The filesystem is an allowlist, like the environment: a path nobody
+listed does not exist inside, so a new mount or a forgotten directory
+is hidden by default. A build that needs a path outside the list fails
+loudly; the list grows by a change to this table, never by a fallback.
+
+**makepkg configuration.** `/etc/makepkg.conf` and
+`/etc/makepkg.conf.d/*.conf` are read through the read-only `/etc`. Of the
+user's files, makepkg reads the first readable of
+`${XDG_CONFIG_HOME:-$HOME/.config}/pacman/makepkg.conf` and
+`$HOME/.makepkg.conf`. aur-curator picks the same one on the host and
+binds it at `$HOME/.config/pacman/makepkg.conf` or `$HOME/.makepkg.conf`
+inside, by where it came from. `MAKEPKG_CONF` is not passed, so a build
+always reads the system file first.
+
+**Environment.** An allowlist, never the user's whole environment:
+
+- passed when set: `PATH`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TZ`,
+  `TERM`, `MAKEFLAGS`, `PACKAGER`;
+- set by aur-curator: `HOME` (the tmpfs); `PKGDEST`, `SRCDEST`,
+  `SRCPKGDEST`, `LOGDEST` and `BUILDDIR`, each the workspace; and
+  `FAKEROOTDONTTRYCHOWN=1`: in the user namespace the real `chown` to
+  root fails (uid 0 is not mapped) with an error fakeroot does not
+  ignore, so a `package()` that chowns to root would fail. fakeroot
+  then only records the ownership, and the package still says
+  `root root`;
+- set by bwrap: `PWD`, the workspace (bwrap sets it after changing
+  into it). makepkg
+  keeps environment values over its configuration files, so these win
+  over anything the user's makepkg configuration sets.
+
+**Isolation.** Separate user, PID, IPC, UTS and cgroup namespaces; no
+nested user namespaces (`--disable-userns`); `no_new_privs`, so setuid
+binaries gain nothing; a new session (`--new-session`); the sandbox ends
+when aur-curator does (`--die-with-parent`), so cancel (X) ends the
+whole build. Inside, the aur-curator binary joins a new, empty kernel
+session keyring and then runs makepkg in its place. The network is
+shared with the host (`threat-model.md` P6).
+
+**Sequence.**
+
+1. **Self-test** under the build's sandbox. Inside: no Unix socket
+   accepts a connection (`sockets`); the session and user keyrings are
+   empty (`keyring`); `no_new_privs` is set (`nnp`); a user namespace
+   cannot be created (`userns`); the environment is exactly the
+   allowlist (`env`); `/` holds only the entries in the table above,
+   `rootPath` only the path down to the workspace, and the config file,
+   `activityLogPath` and `repositoryPath` cannot be read (`hidden`). On
+   the host: marker files written inside into `rootPath` and
+   `repositoryPath` are absent (`writes`). A failure fails the build,
+   naming the check.
+2. **Keys.** `makepkg --printsrcinfo` runs in the sandbox with the
+   workspace read-only. It has the network, like the build: sourcing a
+   PKGBUILD runs its top-level code, which may fetch (some `-bin`
+   packages read their checksums from upstream). Taking the network
+   from PKGBUILD code is P6's. aur-curator reads `validpgpkeys` from
+   its output, as `key = value` lines; it never sources the PKGBUILD
+   itself. Each value must be a full 40-digit fingerprint, as makepkg
+   requires; anything else fails the build, naming the value.
+   (`validpgpkeys` is not an architecture-specific array in makepkg's
+   schema, so there is no `validpgpkeys_<arch>`.)
+3. **Keybox.** On the host, those keys are exported from the user's
+   GnuPG into a new keybox under `builds/<id>/keyring/`, outside the
+   workspace. No keys means no keybox. A key the user's GnuPG does not
+   have fails the build, naming its fingerprint.
+4. **Build:** `makepkg --noconfirm --nocolor` in the sandbox.
+
+**Build log.** The first line is written by aur-curator, not makepkg:
+`aur-curator: build environment:` and the names of the variables
+passed, never their values. aur-curator's other lines all start with
+`aur-curator:` too:
+
+- `aur-curator: sandbox self-test failed: <check>: <detail>`, one per
+  failing check (the build stops there);
+- `aur-curator: sandbox: abstract sockets reachable: <names>`: the
+  abstract Unix sockets (`@` names) the sandbox can still reach. Not a
+  failure until the network is separate (P6);
+- `aur-curator: validpgpkeys: <fingerprints>`, when the PKGBUILD names
+  keys, or the reason they could not be used.
+
+**What a build no longer has.**
+
+- `PATH` entries under `$HOME` (`~/.cargo/bin`, `~/go/bin`) do not
+  resolve: a build that needs a toolchain installed only in the home
+  directory fails. Install it system-wide.
+- Language caches in `$HOME` (cargo, npm, go) are empty each time, so
+  those builds download their dependencies again.
+- Nothing from `$HOME` but the one makepkg configuration file.
+- Files that `package()` extracts from an archive as root-owned lose
+  that ownership under the user namespace; `tar --no-same-owner` in the
+  PKGBUILD avoids it.
+
+makepkg still runs without `-s`: its own dependency check reads the
+pacman database through the read-only `/var/lib/pacman` and stops on a missing
+dependency, which the user installs (#351).
+
+The same self-test is `check` 4 (`workflow.md` § Check (Consistency)).
+Builds before #496 recorded `backend` `makepkg` and ran unsandboxed
+with the user's environment minus a denylist (#473).
 
 ### Latest Attempt and Last Success
 
@@ -882,7 +993,7 @@ Code: `workspace.go`; loading in `internal/config`.
 | autoMerge | Merge automatically after a successful Approve, with no prompt; otherwise the review stays Approved until the user merges | Optional — defaults to false |
 | autoAnalyzeAfterImport | Run analyzers automatically after a successful Import (Import's clone already establishes `upstream/master`, so no Fetch is needed). A failed auto-analyze is reported but does not undo Import | Optional — defaults to false |
 | activityLogPath | The always-on, append-only activity log | Optional — defaults to `<rootPath>/.aur-curator/activity.log` |
-| builderBackend | Builder implementation. `makepkg` is the only one; the key is there for a future sandboxed backend | Optional — defaults to `makepkg`; any other value is an error (#408) |
+| builderBackend | Builder implementation. `makepkg` is the only one, and it always runs in the bubblewrap sandbox (§ Build → Build Environment, #496); there is no unsandboxed value | Optional — defaults to `makepkg`; any other value is an error (#408) |
 
 The activity log (one human-readable line per lifecycle event — import,
 approve, reject, merge, build, confirm, publish — success and failure

@@ -6,130 +6,73 @@ import (
 	"testing"
 )
 
-func TestCleanEnv(t *testing.T) {
-	tests := []struct {
-		name        string
-		environ     []string
-		wantKept    []string
-		wantRemoved []string
-	}{
-		{
-			name:        "empty input",
-			environ:     nil,
-			wantKept:    []string{},
-			wantRemoved: nil,
-		},
-		{
-			name:        "nothing denied: everything kept in order",
-			environ:     []string{"PATH=/usr/bin", "HOME=/home/u", "LANG=C"},
-			wantKept:    []string{"PATH=/usr/bin", "HOME=/home/u", "LANG=C"},
-			wantRemoved: nil,
-		},
-		{
-			name: "every exact name removed",
-			environ: []string{
-				"SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket",
-				"SSH_AGENT_PID=42",
-				"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
-				"SSH_ASKPASS=/usr/lib/ssh/x11-ssh-askpass",
-				"SUDO_ASKPASS=/usr/bin/askpass",
-				"GIT_ASKPASS=/usr/bin/askpass",
-				"DISPLAY=:0",
-				"WAYLAND_DISPLAY=wayland-0",
-				"XAUTHORITY=/home/u/.Xauthority",
-			},
-			wantKept: []string{},
-			wantRemoved: []string{
-				"DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "GIT_ASKPASS",
-				"SSH_AGENT_PID", "SSH_ASKPASS", "SSH_AUTH_SOCK",
-				"SUDO_ASKPASS", "WAYLAND_DISPLAY", "XAUTHORITY",
-			},
-		},
-		{
-			name:        "AUR_CURATOR_ prefix removed",
-			environ:     []string{"AUR_CURATOR_GITEA_TOKEN=secret", "AUR_CURATOR_TRACE=1", "PATH=/usr/bin"},
-			wantKept:    []string{"PATH=/usr/bin"},
-			wantRemoved: []string{"AUR_CURATOR_GITEA_TOKEN", "AUR_CURATOR_TRACE"},
-		},
-		{
-			name:        "credential suffixes removed",
-			environ:     []string{"GITHUB_TOKEN=a", "GH_TOKEN=b", "FOO_SECRET=c", "DB_PASSWORD=d", "PATH=/usr/bin"},
-			wantKept:    []string{"PATH=/usr/bin"},
-			wantRemoved: []string{"DB_PASSWORD", "FOO_SECRET", "GH_TOKEN", "GITHUB_TOKEN"},
-		},
-		{
-			name: "names that only contain a denied name are kept",
-			environ: []string{
-				"MY_SSH_AUTH_SOCK=x",
-				"SSH_AUTH_SOCK_OLD=x",
-				"TOKEN_FILE=x",
-				"XAUR_CURATOR_X=x",
-				"STARSHIP_SESSION_KEY=x",
-				"DISPLAYS=x",
-			},
-			wantKept: []string{
-				"MY_SSH_AUTH_SOCK=x",
-				"SSH_AUTH_SOCK_OLD=x",
-				"TOKEN_FILE=x",
-				"XAUR_CURATOR_X=x",
-				"STARSHIP_SESSION_KEY=x",
-				"DISPLAYS=x",
-			},
-			wantRemoved: nil,
-		},
-		{
-			name:        "kept entries stay in order around removed ones",
-			environ:     []string{"A=1", "SSH_AUTH_SOCK=s", "B=2", "DISPLAY=:0", "C=3"},
-			wantKept:    []string{"A=1", "B=2", "C=3"},
-			wantRemoved: []string{"DISPLAY", "SSH_AUTH_SOCK"},
-		},
-		{
-			name:        "duplicate entries: removed name listed once",
-			environ:     []string{"SSH_AUTH_SOCK=a", "PATH=/usr/bin", "SSH_AUTH_SOCK=b"},
-			wantKept:    []string{"PATH=/usr/bin"},
-			wantRemoved: []string{"SSH_AUTH_SOCK"},
-		},
-		{
-			name:        "entry without = kept unchanged",
-			environ:     []string{"SSH_AUTH_SOCK", "PATH=/usr/bin"},
-			wantKept:    []string{"SSH_AUTH_SOCK", "PATH=/usr/bin"},
-			wantRemoved: nil,
-		},
-		{
-			name:        "empty value still removed",
-			environ:     []string{"AUR_CURATOR_GITEA_TOKEN=", "PATH=/usr/bin"},
-			wantKept:    []string{"PATH=/usr/bin"},
-			wantRemoved: []string{"AUR_CURATOR_GITEA_TOKEN"},
-		},
+func TestBuildEnv(t *testing.T) {
+	const home, ws = "/home/dan", "/home/dan/aur/.aur-curator/builds/b1/work/src"
+	host := []string{
+		"PATH=/usr/bin:/home/dan/.cargo/bin",
+		"AUR_CURATOR_GITEA_TOKEN=tok",
+		"SSH_AUTH_SOCK=/run/user/1000/ssh",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+		"DISPLAY=:0",
+		"GITHUB_TOKEN=gh",
+		"GNUPGHOME=/home/dan/.gnupg",
+		"MAKEPKG_CONF=/etc/other.conf",
+		"PKGDEST=/srv/pkgs", // pinned below, never passed
+		"HOME=/root",        // pinned below, never passed
+		"LANG=en_IN.UTF-8",
+		"LC_ALL=C",
+		"LC_=x", // not a locale variable
+		"TERM=xterm",
+		"MAKEFLAGS=-j8",
+		"PACKAGER=Dan <d@example.org>",
+		"USER=dan",
+		"PATH=/second", // a duplicate: the first wins, as getenv does
+		"NOEQUALS",
 	}
+	env, names := buildEnv(host, home, ws)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			kept, removed := cleanEnv(tt.environ)
-			if !slices.Equal(kept, tt.wantKept) {
-				t.Errorf("kept = %q, want %q", kept, tt.wantKept)
-			}
-			if !slices.Equal(removed, tt.wantRemoved) {
-				t.Errorf("removed = %q, want %q", removed, tt.wantRemoved)
-			}
-		})
+	want := []string{
+		"PATH=/usr/bin:/home/dan/.cargo/bin",
+		"LANG=en_IN.UTF-8",
+		"LC_ALL=C",
+		"TERM=xterm",
+		"MAKEFLAGS=-j8",
+		"PACKAGER=Dan <d@example.org>",
+		"USER=dan",
+		"HOME=" + home,
+		"PKGDEST=" + ws, "SRCDEST=" + ws, "SRCPKGDEST=" + ws, "LOGDEST=" + ws, "BUILDDIR=" + ws,
+		"FAKEROOTDONTTRYCHOWN=1",
+	}
+	if !slices.Equal(env, want) {
+		t.Fatalf("env\n got %q\nwant %q", env, want)
+	}
+	wantNames := []string{"PATH", "LANG", "LC_ALL", "TERM", "MAKEFLAGS", "PACKAGER", "USER", "HOME", "PKGDEST", "SRCDEST", "SRCPKGDEST", "LOGDEST", "BUILDDIR", "FAKEROOTDONTTRYCHOWN"}
+	if !slices.Equal(names, wantNames) {
+		t.Fatalf("names %q", names)
 	}
 }
 
-// TestCleanEnvRemovedHasNoValues checks that removed holds names only:
-// a secret value must never reach the build log.
-func TestCleanEnvRemovedHasNoValues(t *testing.T) {
-	const secret = "s3cr3t-value"
-	_, removed := cleanEnv([]string{
-		"AUR_CURATOR_GITEA_TOKEN=" + secret,
-		"GH_TOKEN=" + secret,
-	})
-	if len(removed) != 2 {
-		t.Fatalf("removed = %q, want 2 names", removed)
+func TestBuildEnvMinimal(t *testing.T) {
+	env, names := buildEnv(nil, "/h", "/w")
+	if len(env) != 7 || env[0] != "HOME=/h" || names[0] != "HOME" {
+		t.Fatalf("%q %q", env, names)
 	}
-	for _, name := range removed {
-		if strings.Contains(name, "=") || strings.Contains(name, secret) {
-			t.Errorf("removed entry %q contains a value", name)
+}
+
+func TestEnvLogLine(t *testing.T) {
+	got := envLogLine([]string{"PATH", "HOME"})
+	if got != "aur-curator: build environment: PATH, HOME" {
+		t.Fatalf("%q", got)
+	}
+}
+
+// The log line carries names only: nothing after a name can be a value.
+func TestEnvLogLineHasNoValues(t *testing.T) {
+	_, names := buildEnv([]string{"PATH=/secret/path", "PACKAGER=Dan <d@example.org>"}, "/h", "/w")
+	line := envLogLine(names)
+	for _, v := range []string{"/secret/path", "Dan", "/h", "/w"} {
+		if strings.Contains(line, v) {
+			t.Errorf("log line holds a value %q: %s", v, line)
 		}
 	}
 }
