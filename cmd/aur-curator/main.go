@@ -482,6 +482,7 @@ func runCheck(
 		check1MissingRev      int
 		check1Corrupted       int
 		check1InvalidNames    int
+		check1BuildNetwork    int
 		check2DanglingRefs    int
 		check2OrphanArts      int
 		check2StaleArts       int
@@ -527,6 +528,11 @@ func runCheck(
 	catSet := make(map[domain.PackageName]bool, len(packages))
 	for _, pkg := range packages {
 		catSet[pkg] = true
+	}
+	// A buildNetwork name that is not curated (#522): report-only.
+	for _, n := range uncuratedBuildNetwork(cfg.BuildNetwork, catSet) {
+		check1BuildNetwork++
+		findings = append(findings, uncuratedBuildNetworkFinding(n))
 	}
 
 	// ---- Check 1: catalog ↔ store review-record cross-check ----
@@ -745,6 +751,7 @@ func runCheck(
 	fmt.Printf("Check 1 — missing reviews (report-only): %d\n", check1MissingRev)
 	fmt.Printf("Check 1 — corrupted records (report-only): %d\n", check1Corrupted)
 	fmt.Printf("Check 1 — invalid package names (report-only): %d\n", check1InvalidNames)
+	fmt.Printf("Check 1 — buildNetwork names not curated (report-only): %d\n", check1BuildNetwork)
 	fmt.Printf("Check 2 — dangling artifact refs auto-fixed: %d\n", check2DanglingRefs)
 	fmt.Printf("Check 2 — orphaned artifacts auto-fixed: %d\n", check2OrphanArts)
 	fmt.Printf("Check 2 — stale artifacts auto-fixed: %d\n", check2StaleArts)

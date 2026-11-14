@@ -64,7 +64,7 @@ type lp343Builder struct {
 	gotLogArg string
 }
 
-func (b *lp343Builder) Build(_ context.Context, _ string, logPath string) (BuildResult, error) {
+func (b *lp343Builder) Build(_ context.Context, _ string, logPath string, _ BuildOptions) (BuildResult, error) {
 	b.gotLogArg = logPath
 	b.seen, _ = b.st.Get("yay")
 	return b.result, b.err

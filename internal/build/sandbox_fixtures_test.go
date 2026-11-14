@@ -324,6 +324,11 @@ package() { install -Dm644 data.txt "$pkgdir/usr/share/signed/data.txt"; }
 	if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "gpg --refresh-keys "+fpr) {
 		t.Errorf("error lacks the hint: %v", err)
 	}
+	// Signatures are first checked in the download, which has the
+	// network: no #522 hint (#522).
+	if !strings.HasPrefix(err.Error(), "makepkg failed downloading the sources: ") || strings.Contains(err.Error(), "#522") {
+		t.Errorf("not a download failure, or the network hint: %v", err)
+	}
 }
 
 // A signed source with no validpgpkeys: the sandbox has no keyring, so
@@ -401,7 +406,7 @@ func TestSandboxFixtureCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.builder.Build(ctx, f.ws, f.logPath)
+		_, err := f.builder.Build(ctx, f.ws, f.logPath, BuildOptions{Package: "fixture"})
 		done <- err
 	}()
 	deadline := time.Now().Add(20 * time.Second)

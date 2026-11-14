@@ -80,7 +80,7 @@ func NewDependencies(
 		Home:           homeDir(),
 	}
 	makepkgBuilder := build.NewMakepkgBuilder(sandboxPaths)
-	buildEngine := build.NewEngine(makepkgBuilder, buildStore, artStore, provider, paths)
+	buildEngine := build.NewEngine(makepkgBuilder, buildStore, artStore, provider, paths, build.WithBuildNetwork(cfg.BuildNetwork))
 
 	return Dependencies{
 		Git:       provider,

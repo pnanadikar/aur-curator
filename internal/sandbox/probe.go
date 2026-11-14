@@ -29,11 +29,19 @@ const (
 	CheckUserns  = "userns"
 	CheckEnv     = "env"
 	CheckHidden  = "hidden"
+	CheckNetwork = "network"
 	CheckWrites  = "writes"
 )
 
-// probeChecks are the checks the probe must report, each exactly once.
-var probeChecks = []string{CheckSockets, CheckKeyring, CheckNNP, CheckUserns, CheckEnv, CheckHidden}
+// probeChecks are the checks the probe must report, each exactly once:
+// network only in a sandbox without the network (#522).
+func probeChecks(offline bool) []string {
+	c := []string{CheckSockets, CheckKeyring, CheckNNP, CheckUserns, CheckEnv, CheckHidden}
+	if offline {
+		c = append(c, CheckNetwork)
+	}
+	return c
+}
 
 // socketWalkExclude are trees the sockets walk skips: the read-only
 // system files and the kernel's virtual filesystems.
@@ -49,6 +57,7 @@ type probeArgs struct {
 	env       []string // the exact environment, NAME=value
 	skip      []string // sockets allowed to accept (the DNS bind-back)
 	marker    string   // file name the probe writes into rootPath and repo
+	offline   bool     // the sandbox has no network: check it (#522)
 }
 
 type multi []string
@@ -69,6 +78,7 @@ func parseProbeArgs(args []string) (probeArgs, error) {
 	fsx.Var(&env, "env", "expected NAME=value")
 	fsx.Var(&skip, "skip-socket", "socket allowed to accept")
 	fsx.StringVar(&a.marker, "marker", "", "marker file name")
+	fsx.BoolVar(&a.offline, "offline", false, "the sandbox has no network")
 	if err := fsx.Parse(args); err != nil {
 		return a, err
 	}
@@ -105,7 +115,13 @@ func Probe(args []string, out io.Writer) int {
 	report(CheckEnv, checkEnv(os.Environ(), a.env))
 	report(CheckHidden, checkHidden("/", a))
 
-	if abs := abstractSockets("/proc/net/unix"); len(abs) > 0 {
+	// Abstract sockets belong to the network namespace: without the
+	// network, any is a failure; with it, they are listed (#522).
+	abs := abstractSockets("/proc/net/unix")
+	if a.offline {
+		ifaces, err := interfaceNames()
+		report(CheckNetwork, checkNetwork(ifaces, err, abs))
+	} else if len(abs) > 0 {
 		_, _ = fmt.Fprintf(out, "info abstract sockets reachable: %s\n", strings.Join(abs, " "))
 	}
 	for _, dir := range []string{a.rootPath, a.repo} {
@@ -307,6 +323,42 @@ func checkEmpty(path string) string {
 		return "is readable"
 	}
 	return ""
+}
+
+// interfaceNames lists the network interfaces the process can see.
+func interfaceNames() ([]string, error) {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(ifs))
+	for i, f := range ifs {
+		names[i] = f.Name
+	}
+	return names, nil
+}
+
+// checkNetwork fails unless the only interface is lo and no abstract
+// Unix socket is reachable: a network namespace of the sandbox's own
+// (#522). An interface list that cannot be read is a failure.
+func checkNetwork(ifaces []string, ifaceErr error, abstract []string) string {
+	var bad []string
+	if ifaceErr != nil {
+		bad = append(bad, "interfaces unreadable: "+ifaceErr.Error())
+	}
+	var other []string
+	for _, n := range ifaces {
+		if n != "lo" {
+			other = append(other, n)
+		}
+	}
+	if len(other) > 0 {
+		bad = append(bad, "interfaces besides lo: "+strings.Join(other, " "))
+	}
+	if len(abstract) > 0 {
+		bad = append(bad, "abstract sockets reachable: "+strings.Join(abstract, " "))
+	}
+	return strings.Join(bad, "; ")
 }
 
 // abstractSockets lists the abstract Unix socket names in a

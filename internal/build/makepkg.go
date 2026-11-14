@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pramod/aur-curator/internal/domain"
 	"github.com/pramod/aur-curator/internal/procgroup"
 	"github.com/pramod/aur-curator/internal/sandbox"
 	"github.com/pramod/aur-curator/internal/sanitize"
@@ -58,8 +59,9 @@ func NewMakepkgBuilder(paths SandboxPaths) MakepkgBuilder {
 // Build runs makepkg in workspaceDir inside the sandbox, capturing
 // output to logPath, and returns the produced .pkg.tar.* artifacts.
 // The sequence is domain.md § Build Environment's: self-test, read
-// validpgpkeys offline, export the keybox on the host, build.
-func (b MakepkgBuilder) Build(ctx context.Context, workspaceDir string, logPath string) (BuildResult, error) {
+// validpgpkeys, export the keybox on the host, download the sources
+// with the network, build without it unless opts.Network (#522).
+func (b MakepkgBuilder) Build(ctx context.Context, workspaceDir string, logPath string, opts BuildOptions) (BuildResult, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
 		return BuildResult{}, fmt.Errorf("create log directory %s: %w", filepath.Dir(logPath), err)
 	}
@@ -67,7 +69,7 @@ func (b MakepkgBuilder) Build(ctx context.Context, workspaceDir string, logPath 
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("create log file: %w", err)
 	}
-	result, buildErr := b.build(ctx, workspaceDir, logPath, logFile)
+	result, buildErr := b.build(ctx, workspaceDir, logPath, logFile, opts)
 	if err := logFile.Close(); err != nil && buildErr == nil {
 		return BuildResult{}, fmt.Errorf("close log file: %w", err)
 	}
@@ -75,7 +77,7 @@ func (b MakepkgBuilder) Build(ctx context.Context, workspaceDir string, logPath 
 }
 
 // build is Build after the log is open; Build closes it.
-func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string, logFile io.Writer) (BuildResult, error) {
+func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string, logFile io.Writer, opts BuildOptions) (BuildResult, error) {
 	if b.Paths.Helper == "" {
 		writeLog(logFile, "aur-curator: "+errNoHelper.Error())
 		return BuildResult{}, errNoHelper
@@ -89,8 +91,10 @@ func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string,
 	if _, err := fmt.Fprintln(logFile, envLogLine(names)); err != nil {
 		return BuildResult{}, fmt.Errorf("write log file: %w", err)
 	}
+	// The second names the network; the Build Log header reads it.
+	writeLog(logFile, networkLogLine(opts.Network))
 
-	policy := b.policy(workspaceDir, env)
+	policy := b.policy(workspaceDir, env, opts.Network)
 
 	// 1. Self-test, under the build's own policy.
 	rep, err := sandbox.SelfTest(ctx, policy, b.targets())
@@ -107,10 +111,10 @@ func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string,
 		return BuildResult{}, err
 	}
 
-	// 2. validpgpkeys, from a read-only workspace. The network stays on:
-	// sourcing a PKGBUILD runs its top-level code, which may fetch
-	// (tor-browser-bin reads its checksums from upstream with curl), and
-	// the build itself has the network until P6 anyway.
+	// 2. validpgpkeys, from a read-only workspace, with the build's
+	// network: sourcing a PKGBUILD runs its top-level code, and code that
+	// fetches there (tor-browser-bin's curl) gets the network only if
+	// the package is in buildNetwork (#522).
 	// makepkg refuses to start, even for --printsrcinfo, unless
 	// $BUILDDIR is writable. The workspace is not, here, so the
 	// destinations point at the sandbox's own /tmp: an empty tmpfs,
@@ -122,6 +126,15 @@ func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string,
 	if err := b.run(ctx, srcinfo, &out, io.MultiWriter(logFile, &stderr), "makepkg", "--printsrcinfo"); err != nil {
 		if ctx.Err() != nil {
 			return BuildResult{}, fmt.Errorf("makepkg cancelled: %w", ctx.Err())
+		}
+		// Without the network, top-level code that fetches can leave the
+		// PKGBUILD unreadable: tor-browser-bin's quoted curl makes an
+		// empty checksum, which makepkg's lint rejects here, before any
+		// build (#522). Same hint as the build's.
+		if !opts.Network {
+			hint := noNetworkHint(opts.Package)
+			writeLog(logFile, "aur-curator: "+hint)
+			return BuildResult{}, fmt.Errorf("makepkg --printsrcinfo failed: %w: %s; %s", err, sanitize.ForMessage(stderr.String()), hint)
 		}
 		return BuildResult{}, fmt.Errorf("makepkg --printsrcinfo failed: %w: %s", err, sanitize.ForMessage(stderr.String()))
 	}
@@ -142,22 +155,25 @@ func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string,
 		writeLog(logFile, "aur-curator: validpgpkeys: "+strings.Join(keys, ", "))
 	}
 
-	// 4. The build.
-	stderr.Reset()
-	trace.Log(ctx, "handoff", "to", "subprocess", "from", "builder", "cmd", "makepkg", "backend", Backend, "env", strings.Join(names, ","))
-	var unknownKeys unknownKeyWatcher
-	if err := b.run(ctx, policy, logFile, io.MultiWriter(logFile, &stderr, &unknownKeys), "makepkg", "--noconfirm", "--nocolor"); err != nil {
-		if ctx.Err() != nil {
-			return BuildResult{}, fmt.Errorf("makepkg cancelled: %w", ctx.Err())
-		}
-		// Every key in validpgpkeys is in the keyring (exportKeys), so an
-		// unknown key is a stale copy or another signer: say both (#514).
-		if ids := unknownKeys.IDs(); len(ids) > 0 && len(keys) > 0 {
-			hint := staleKeyHint(ids, keys)
-			writeLog(logFile, "aur-curator: "+hint)
-			return BuildResult{}, fmt.Errorf("makepkg failed: %w: %s; %s", err, sanitize.ForMessage(stderr.String()), hint)
-		}
-		return BuildResult{}, fmt.Errorf("makepkg failed: %w: %s", err, sanitize.ForMessage(stderr.String()))
+	trace.Log(ctx, "handoff", "to", "subprocess", "from", "builder", "cmd", "makepkg", "backend", Backend, "env", strings.Join(names, ","), "network", opts.Network)
+
+	// 4. The download, always with the network: makepkg downloads and
+	// checks every source, then stops (#522). Signatures are checked
+	// first here, so #514's hint belongs to this run.
+	download := policy
+	download.Network = true
+	if err := b.makepkg(ctx, download, logFile, keys, "makepkg failed downloading the sources", "", "--verifysource", "--nocolor"); err != nil {
+		return BuildResult{}, err
+	}
+
+	// 5. The build: --holdver keeps VCS sources at what step 4 fetched.
+	hint := ""
+	if !opts.Network {
+		writeLog(logFile, "aur-curator: sources downloaded; building without network")
+		hint = noNetworkHint(opts.Package)
+	}
+	if err := b.makepkg(ctx, policy, logFile, keys, "makepkg failed", hint, "--holdver", "--noconfirm", "--nocolor"); err != nil {
+		return BuildResult{}, err
 	}
 
 	artifactPaths, err := findArtifacts(workspaceDir)
@@ -165,6 +181,79 @@ func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string,
 		return BuildResult{}, fmt.Errorf("discover artifacts: %w", err)
 	}
 	return BuildResult{LogLocation: logPath, ArtifactPaths: artifactPaths}, nil
+}
+
+// makepkg runs makepkg with args under p, its output in the log. On
+// failure the error starts with failed, then makepkg's stderr, the #514
+// hint when it applies, and hint, if any; both hints also go to the log.
+func (b MakepkgBuilder) makepkg(ctx context.Context, p sandbox.Policy, logFile io.Writer, keys []string, failed, hint string, args ...string) error {
+	var stderr bytes.Buffer
+	var unknownKeys unknownKeyWatcher
+	err := b.run(ctx, p, logFile, io.MultiWriter(logFile, &stderr, &unknownKeys), "makepkg", args...)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("makepkg cancelled: %w", ctx.Err())
+	}
+	var hints []string
+	// Every key in validpgpkeys is in the keyring (exportKeys), so an
+	// unknown key is a stale copy or another signer: say both (#514).
+	if ids := unknownKeys.IDs(); len(ids) > 0 && len(keys) > 0 {
+		hints = append(hints, staleKeyHint(ids, keys))
+	}
+	if hint != "" {
+		hints = append(hints, hint)
+	}
+	tail := ""
+	for _, h := range hints {
+		writeLog(logFile, "aur-curator: "+h)
+		tail += "; " + h
+	}
+	return fmt.Errorf("%s: %w: %s%s", failed, err, sanitize.ForMessage(stderr.String()), tail)
+}
+
+// networkLogLine is the build log's second line: the network the build
+// has (#522). Package Details reads it back (NetworkFromLog).
+// It never changes with makepkg's output: aur-curator writes it before
+// makepkg runs.
+func networkLogLine(network bool) string {
+	if network {
+		return networkLinePrefix + networkWhole
+	}
+	return networkLinePrefix + networkDownload
+}
+
+const (
+	networkLinePrefix = "aur-curator: network: "
+	networkDownload   = "for downloading only"
+	networkWhole      = "for the whole build (buildNetwork)"
+)
+
+// NetworkFromLog reads, from a build log, the network the build had:
+// whole is true for a buildNetwork package. ok is false when the log has
+// no such line in its second line, the only place aur-curator writes it
+// (a build before #522, or one that failed before writing it). Only the
+// second line counts: a build's own output could print the same text.
+func NetworkFromLog(log string) (whole, ok bool) {
+	lines := strings.SplitN(log, "\n", 3)
+	if len(lines) < 2 {
+		return false, false
+	}
+	switch strings.TrimSuffix(lines[1], "\r") {
+	case networkLinePrefix + networkDownload:
+		return false, true
+	case networkLinePrefix + networkWhole:
+		return true, true
+	}
+	return false, false
+}
+
+// noNetworkHint is said when a build without the network fails, on
+// every such failure: no pattern recognises every tool's network
+// error, and some failures show none (#522).
+func noNetworkHint(pkg domain.PackageName) string {
+	return fmt.Sprintf("this build had no network (#522); if the package needs it, check why in the PKGBUILD, then add %s to buildNetwork in the config", pkg)
 }
 
 // run runs name with args in a sandbox built from p, in its own
@@ -178,9 +267,10 @@ func (b MakepkgBuilder) run(ctx context.Context, p sandbox.Policy, stdout, stder
 	return procgroup.Run(ctx, cmd, "to", "subprocess", "from", "builder", "cmd", name)
 }
 
-// policy is the sandbox for a build in workspace with env: network on,
-// workspace writable. The --printsrcinfo run narrows it.
-func (b MakepkgBuilder) policy(workspace string, env []string) sandbox.Policy {
+// policy is the sandbox for a build in workspace with env: workspace
+// writable, the network only if network (buildNetwork, #522). The
+// --printsrcinfo run narrows it; the download widens it to the network.
+func (b MakepkgBuilder) policy(workspace string, env []string, network bool) sandbox.Policy {
 	p := sandbox.Policy{
 		Workspace:         workspace,
 		WorkspaceWritable: true,
@@ -192,7 +282,7 @@ func (b MakepkgBuilder) policy(workspace string, env []string) sandbox.Policy {
 		},
 		Helper:  b.Paths.Helper,
 		Env:     env,
-		Network: true,
+		Network: network,
 	}
 	if conf, dest := userMakepkgConf(os.Getenv("XDG_CONFIG_HOME"), b.Paths.Home); conf != "" {
 		p.ReadOnly = append(p.ReadOnly, sandbox.Bind{Src: conf, Dest: dest})
@@ -318,5 +408,5 @@ func CheckSandbox(ctx context.Context, paths SandboxPaths, dir string) (sandbox.
 		return sandbox.Report{}, fmt.Errorf("create the self-test workspace: %w", err)
 	}
 	env, _ := buildEnv(os.Environ(), paths.Home, ws)
-	return sandbox.SelfTest(ctx, b.policy(ws, env), b.targets())
+	return sandbox.SelfTest(ctx, b.policy(ws, env, false), b.targets())
 }

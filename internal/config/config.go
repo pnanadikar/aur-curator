@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/pramod/aur-curator/internal/domain"
+	"github.com/pramod/aur-curator/internal/pkgname"
 )
 
 // giteaTokenEnv is the environment variable that overrides the config
@@ -78,6 +79,7 @@ func GiteaTokenSource(path string) string {
 //     giteaToken key (either source alone is sufficient; blank is unset)
 //   - repoDBName is not a plain file name ending in .db.tar.gz
 //   - builderBackend is set to anything but "makepkg"
+//   - a buildNetwork entry is not a valid package name (#522)
 //
 // Load warns on stderr, and carries on, for any other unknown key, and
 // when the token comes from the file and the file is group- or
@@ -88,6 +90,7 @@ func GiteaTokenSource(path string) string {
 //   - RepoDBName: "custom.db.tar.gz"
 //   - ActivityLogPath: <RootPath>/.aur-curator/activity.log
 //   - AutoMerge, AutoAnalyzeAfterImport: false
+//   - BuildNetwork: none; a name listed twice is kept once
 //
 // GiteaToken resolution order:
 //  1. AUR_CURATOR_GITEA_TOKEN environment variable, if set — overrides
@@ -207,8 +210,32 @@ func Load(path string) (domain.WorkspaceConfig, error) {
 	if cfg.ActivityLogPath == "" {
 		cfg.ActivityLogPath = filepath.Join(cfg.RootPath, ".aur-curator", "activity.log")
 	}
+	nets, err := buildNetwork(cfg.BuildNetwork)
+	if err != nil {
+		return domain.WorkspaceConfig{}, fmt.Errorf("config: buildNetwork: %w (file: %s)", err, path)
+	}
+	cfg.BuildNetwork = nets
 
 	return cfg, nil
+}
+
+// buildNetwork trims each name, checks it against the AUR's rule and
+// drops repeats, keeping the first (#522). Whether a name is curated is
+// check's to report, not an error: such a name gives nothing the network.
+func buildNetwork(names []domain.PackageName) ([]domain.PackageName, error) {
+	var out []domain.PackageName
+	seen := make(map[domain.PackageName]bool, len(names))
+	for _, n := range names {
+		n = domain.PackageName(strings.TrimSpace(string(n)))
+		if err := pkgname.Check(string(n)); err != nil {
+			return nil, err
+		}
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 
 // checkKeys compares the top-level keys of the JSON object in b with the

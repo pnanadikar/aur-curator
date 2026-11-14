@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/pramod/aur-curator/internal/build"
 	"github.com/pramod/aur-curator/internal/debug"
 	"github.com/pramod/aur-curator/internal/deps"
 	"github.com/pramod/aur-curator/internal/domain"
@@ -1168,13 +1169,28 @@ func renderBuildHeader(identity, note string) string {
 }
 
 // buildLogHeader is the Build Log tab's header for the record whose log
-// is shown, or "" when there is none (#507).
+// is shown, or "" when there is none (#507), with the network the build
+// had when its log says (#522).
 func (m PackageDetailModel) buildLogHeader() string {
 	b := m.buildLogBuild
 	if b == nil {
 		return ""
 	}
-	return renderBuildHeader(buildIdentity(b, true), m.updateNote(b))
+	return renderBuildHeader(buildIdentity(b, true)+networkPart(m.buildLogContent), m.updateNote(b))
+}
+
+// networkPart is the Build Log header's network, read from the log's
+// own line (tui-package-details.md § Build Log, #522), or "" when the log
+// does not say.
+func networkPart(log string) string {
+	whole, ok := build.NetworkFromLog(log)
+	switch {
+	case !ok:
+		return ""
+	case whole:
+		return " · network for the whole build"
+	}
+	return " · network for downloading only"
 }
 
 // artifactsHeader is the Artifacts tab's header: the last successful

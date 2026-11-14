@@ -168,14 +168,21 @@ Short hash, author, subject, date. With nothing to merge, it shows
 The log of the latest build attempt, under a header line naming that
 build: its commit (8 characters), start time (local, with the year)
 and status, read from the build record each time the log is read
-(#507):
+(#507), then the network the build had (#522):
 
 ```text
-a1b2c3d4 · 6 Nov 2026 20:13 · running
+a1b2c3d4 · 6 Nov 2026 20:13 · running · network for downloading only
 An update merged since (2e00dbaf) is not built yet.
 
 aur-curator: build environment: …
+aur-curator: network: for downloading only
 ```
+
+The network part is read from the log's `aur-curator: network:` line
+(`domain.md` § Build → Build Environment, Build log): `network for
+downloading only`, or `network for the whole build` for a package in
+`buildNetwork`. A log without that line (a build from before #522, or
+one that failed before writing it) gives no network part.
 
 The status is the record's: `pending` or `running` while the build runs
 (`End` re-reads it with the log), then `success` or `failed`. The second

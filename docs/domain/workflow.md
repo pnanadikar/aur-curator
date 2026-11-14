@@ -827,6 +827,7 @@ sandbox, which runs no package code.
 | 0 | Workspace root or `.aur-curator/` missing or not a directory | Fails immediately (exit 1) |
 | 1 | A catalog package with no Review record, or an unreadable one | Report |
 | 1 | A directory in the workspace root whose name is not a package name (`domain.md` § Package → Name) | Report |
+| 1 | A name in the config's `buildNetwork` that is not a catalog package (`domain.md` § WorkspaceConfig, #522) | Report. It gives nothing the network; remove it or fix the spelling. |
 | 1 | `.aur-curator/packages/<pkg>/` for a package no longer in the catalog | Delete. A directory there whose name is not a package name is reported, never deleted (#504). |
 | 2 | A Build record listing an artifact ID whose record is missing | Remove the reference. A reference to an artifact record that exists but cannot be read is kept and reported. |
 | 2 | Artifact records for packages no longer in the catalog | Delete |
@@ -841,7 +842,9 @@ sandbox, which runs no package code.
 
 Check 4 runs the self-test in a throwaway directory under
 `.aur-curator/`, removed afterwards, with the paths a build uses. It
-needs no package.
+needs no package. It runs the policy of a build without the network,
+so its `network` check (no interface but `lo`, no abstract socket)
+covers every package not in `buildNetwork` (#522).
 
 The check 3 repository rows are explained in § Published: Stored Flag, Its
 Limits, and Drift Detection. A missing repository database means nothing

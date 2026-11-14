@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pramod/aur-curator/internal/sandbox"
 )
 
 // These tests run the real bubblewrap: the sandbox is the only way
@@ -80,17 +82,20 @@ func newFixture(t *testing.T) fixture {
 		}
 	}
 	script := "#!/bin/sh\n" +
-		// --printsrcinfo must get a read-only workspace, and the network
-		// (top-level PKGBUILD code may fetch): it reports a write, and the
-		// interfaces it sees, on stderr.
+		// Every run reports its first argument and the interfaces it sees
+		// on stderr (#522). --printsrcinfo must get a read-only workspace:
+		// it reports a write.
 		// Like the real one, it refuses to start unless $BUILDDIR is
 		// writable, --printsrcinfo included.
 		"[ -w \"$BUILDDIR\" ] || { echo \"ERROR: You do not have write permission for the directory BUILDDIR ($BUILDDIR).\" >&2; exit 11; }\n" +
+		"echo \"RUN $1 IFACES=$(grep -c : /proc/net/dev)\" >&2\n" +
+		// A file fail<first argument> in the workspace fails that run.
+		"[ -f \"./fail$1\" ] && { echo \"FAKE FAILURE in $1\" >&2; exit 4; }\n" +
 		"if [ \"$1\" = --printsrcinfo ]; then\n" +
 		"  touch ./printsrcinfo-wrote 2>/dev/null && echo PRINTSRCINFO-WROTE >&2\n" +
-		"  echo \"PRINTSRCINFO-IFACES=$(grep -c : /proc/net/dev)\" >&2\n" +
 		"  cat ./.srcinfo-fixture; exit\n" +
 		"fi\n" +
+		"[ \"$1\" = --verifysource ] && { echo 'fake download ran'; exit; }\n" +
 		"env > ./env.dump\n" +
 		"if [ -f \"$HOME/.gnupg/pubring.kbx\" ]; then echo keybox-present; fi\n" +
 		"cat \"$HOME/secret\" " + f.config + " 2>/dev/null && echo SECRET-READ\n" +
@@ -131,7 +136,7 @@ func (f fixture) srcinfo(t *testing.T, s string) {
 
 func (f fixture) build(t *testing.T) (BuildResult, string, error) {
 	t.Helper()
-	result, err := f.builder.Build(context.Background(), f.ws, f.logPath)
+	result, err := f.builder.Build(context.Background(), f.ws, f.logPath, BuildOptions{Package: "fixture"})
 	log, readErr := os.ReadFile(f.logPath)
 	if readErr != nil {
 		t.Fatalf("read log: %v", readErr)
@@ -218,13 +223,23 @@ func TestMakepkgBuilderEnvironment(t *testing.T) {
 	if strings.Contains(log, "PRINTSRCINFO-WROTE") {
 		t.Error("makepkg --printsrcinfo could write the workspace")
 	}
-	// The same interfaces as the host: the network is shared.
-	hostNet, err := os.ReadFile("/proc/net/dev")
-	if err != nil {
-		t.Fatal(err)
+	// The network only for the download (#522); --printsrcinfo and the
+	// build see lo alone.
+	host := hostIfaces(t)
+	for _, want := range []string{
+		"RUN --printsrcinfo IFACES=1",
+		fmt.Sprintf("RUN --verifysource IFACES=%d", host),
+		"RUN --holdver IFACES=1",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
 	}
-	if want := fmt.Sprintf("PRINTSRCINFO-IFACES=%d", strings.Count(string(hostNet), ":")); !strings.Contains(log, want) {
-		t.Errorf("makepkg --printsrcinfo has no network (want %s):\n%s", want, log)
+	if lines[1] != "aur-curator: network: for downloading only" {
+		t.Errorf("log line 2 = %q", lines[1])
+	}
+	if !strings.Contains(log, "aur-curator: sources downloaded; building without network") {
+		t.Errorf("no download line:\n%s", log)
 	}
 	if len(result.ArtifactPaths) != 1 {
 		t.Errorf("ArtifactPaths = %q, want one archive", result.ArtifactPaths)
@@ -406,7 +421,9 @@ func TestCheckSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckSandbox: %v (%+v)", err, rep)
 	}
-	if len(rep.Results) != 7 || len(rep.Failed()) != 0 {
+	// The seven checks and network: check 4 runs a build's offline
+	// policy (#522).
+	if len(rep.Results) != 8 || len(rep.Failed()) != 0 || rep.Results[6].Check != sandbox.CheckNetwork {
 		t.Fatalf("report %+v", rep)
 	}
 	left, err := filepath.Glob(filepath.Join(dir, "sandbox-check-*"))

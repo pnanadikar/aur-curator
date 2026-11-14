@@ -488,7 +488,7 @@ func (m *mockBuildStore) SaveLastSuccess(name domain.PackageName, b *domain.Buil
 
 type mockBuilder struct{}
 
-func (m *mockBuilder) Build(_ context.Context, _, _ string) (build.BuildResult, error) {
+func (m *mockBuilder) Build(_ context.Context, _, _ string, _ build.BuildOptions) (build.BuildResult, error) {
 	return build.BuildResult{}, nil
 }
 

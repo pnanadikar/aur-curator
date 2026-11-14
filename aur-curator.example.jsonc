@@ -46,6 +46,13 @@
   // other value is an error.
   "builderBackend": "makepkg",
 
+  // Packages whose builds keep the network after their sources are
+  // downloaded: for one that fetches dependencies while it builds (Go,
+  // Rust, npm) or reads its checksums from upstream. Every other build
+  // has no network after the download. List a package only after
+  // checking in its PKGBUILD why it needs the network. Default: none.
+  // "buildNetwork": ["yay"],
+
   // Activity log: one line per import, review decision, merge, build,
   // confirm and publish. Default: <rootPath>/.aur-curator/activity.log
   // "activityLogPath": "/home/you/aur/.aur-curator/activity.log",

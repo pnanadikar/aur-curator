@@ -76,6 +76,9 @@ func SelfTest(ctx context.Context, p Policy, t Targets) (Report, error) {
 	for _, s := range t.SkipSockets {
 		args = append(args, "-skip-socket", s)
 	}
+	if !p.Network {
+		args = append(args, "-offline")
+	}
 
 	cmd, err := Command(ctx, p, p.Helper, args...)
 	if err != nil {
@@ -85,13 +88,14 @@ func SelfTest(ctx context.Context, p Policy, t Targets) (Report, error) {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := procgroup.Run(ctx, cmd, "to", "subprocess", "from", "sandbox", "cmd", "bwrap", "probe", "selftest")
 
-	return finishReport(stdout.String(), stderr.String(), runErr, marker, t)
+	return finishReport(stdout.String(), stderr.String(), runErr, marker, t, !p.Network)
 }
 
 // finishReport turns the probe's output into the self-test's result:
 // "start" when the sandbox never ran, "no result" for a check the probe
-// did not report, then the host-side writes check.
-func finishReport(stdout, stderr string, runErr error, marker string, t Targets) (Report, error) {
+// did not report, then the host-side writes check. offline: the sandbox
+// had no network, so the probe owes the network check too.
+func finishReport(stdout, stderr string, runErr error, marker string, t Targets, offline bool) (Report, error) {
 	rep := parseReport(stdout)
 	if runErr != nil && len(rep.Results) == 0 {
 		detail := strings.TrimSpace(stderr)
@@ -101,7 +105,7 @@ func finishReport(stdout, stderr string, runErr error, marker string, t Targets)
 		rep.Results = []Result{{Check: "start", Detail: oneLine(detail)}}
 		return rep, fmt.Errorf("sandbox self-test: the sandbox did not start: %s", oneLine(detail))
 	}
-	for _, c := range probeChecks {
+	for _, c := range probeChecks(offline) {
 		if !slices.ContainsFunc(rep.Results, func(r Result) bool { return r.Check == c }) {
 			rep.Results = append(rep.Results, Result{Check: c, Detail: "no result from the probe"})
 		}

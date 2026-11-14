@@ -29,7 +29,8 @@ type fakeBuilder struct {
 	onBuild     func()         // called at the start of Build, if non-nil
 	badArtifact bool           // if true, return a successful BuildResult whose ArtifactPaths includes a non-existent path
 
-	gotWorkspace string // workspaceDir of the last Build call ("" if never called)
+	gotWorkspace string       // workspaceDir of the last Build call ("" if never called)
+	gotOpts      BuildOptions // opts of the last Build call
 }
 
 type fakeArtifact struct {
@@ -48,8 +49,9 @@ func newFakeBuilder(artifactContents ...string) *fakeBuilder {
 	return &fakeBuilder{artifacts: arts}
 }
 
-func (f *fakeBuilder) Build(_ context.Context, workspaceDir string, logPath string) (BuildResult, error) {
+func (f *fakeBuilder) Build(_ context.Context, workspaceDir string, logPath string, opts BuildOptions) (BuildResult, error) {
 	f.gotWorkspace = workspaceDir
+	f.gotOpts = opts
 	if f.onBuild != nil {
 		f.onBuild()
 	}

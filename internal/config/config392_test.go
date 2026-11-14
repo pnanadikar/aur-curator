@@ -79,6 +79,7 @@ func TestLoad392_EveryFieldLoads(t *testing.T) {
 		"giteaOrg":               `"myorg"`,
 		"giteaToken":             `"s3cret-value"`,
 		"activityLogPath":        `"/tmp/activity.log"`,
+		"buildNetwork":           `["yay","tor-browser-bin"]`,
 	}
 
 	// Guard: walk WorkspaceConfig fields, verify each has a json tag

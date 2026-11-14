@@ -28,7 +28,7 @@ type fakeBuilder struct {
 	calls atomic.Int32
 }
 
-func (f *fakeBuilder) Build(_ context.Context, _ string, _ string) (build.BuildResult, error) {
+func (f *fakeBuilder) Build(_ context.Context, _ string, _ string, _ build.BuildOptions) (build.BuildResult, error) {
 	f.calls.Add(1)
 	return build.BuildResult{}, nil
 }

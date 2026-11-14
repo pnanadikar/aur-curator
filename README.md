@@ -161,6 +161,7 @@ Optional settings:
 | `builderBackend` | `makepkg` | Build backend. `makepkg`, always in the bubblewrap sandbox, is the only one; any other value is an error. |
 | `autoMerge` | `false` | Merge as soon as you Approve a review, instead of waiting for you to press Merge. Nothing is ever merged without an Approve. |
 | `autoAnalyzeAfterImport` | `false` | Run the analyzers right after an Import. |
+| `buildNetwork` | none | Packages that keep the network for their whole build, not only while their sources are downloaded, e.g. `["yay"]`. List one only after checking in its PKGBUILD why it needs the network. |
 | `activityLogPath` | `<rootPath>/.aur-curator/activity.log` | Human-readable log of every import, decision, merge, build, confirm and publish. |
 
 The file is JSON with comments (`//` and `/* */`). Trailing commas are not
@@ -249,7 +250,12 @@ aur-curator [flags] <config-file> remove <package-name>  stop curating a package
    copy of exactly the commit you merged, in a sandbox that sees only
    the system (`/usr`, `/etc`, `/opt`, the pacman database) and the
    build's own directory: not your home directory, other disks, your
-   other packages, the repository or your session's sockets. It still has the network. Toolchains installed
+   other packages, the repository or your session's sockets. It has the
+   network only while makepkg downloads the sources; `prepare()`,
+   `build()` and `package()` run without it. A package that needs the
+   network after that (one that downloads its Go, Rust or npm
+   dependencies while building, or reads its checksums from upstream)
+   fails, saying so, until you list it in `buildNetwork`. Toolchains installed
    only under your home directory (`~/.cargo/bin`, `~/go/bin`) are not
    visible to it, and language caches there are not reused.
 

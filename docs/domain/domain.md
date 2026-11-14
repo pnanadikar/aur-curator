@@ -150,7 +150,9 @@ One check, `internal/pkgname`, is applied wherever a name enters (#504):
 - the catalog scan: a directory in `rootPath` with any other name is not
   a package; it is reported (`interfaces.md` § Package Catalog);
 - the store: `StorePaths.PackageDir`, and every per-package store path
-  built on it, refuses any other name.
+  built on it, refuses any other name;
+- the config's `buildNetwork` entries: a config error (§ WorkspaceConfig,
+  #522).
 
 ### Lifecycle
 
@@ -634,8 +636,14 @@ nested user namespaces (`--disable-userns`); `no_new_privs`, so setuid
 binaries gain nothing; a new session (`--new-session`); the sandbox ends
 when aur-curator does (`--die-with-parent`), so cancel (X) ends the
 whole build. Inside, the aur-curator binary joins a new, empty kernel
-session keyring and then runs makepkg in its place. The network is
-shared with the host (`threat-model.md` P6).
+session keyring and then runs makepkg in its place.
+
+**Network** (#522; why: `threat-model.md` § The network). Only the
+download (step 4 below) shares the host's network namespace. Every other
+run, the build among them, has a network namespace of its own with only
+`lo`: no route out, no host DNS, and none of the host's abstract Unix
+sockets. A package listed in `buildNetwork` (§ WorkspaceConfig) shares
+the host's network in every run, as builds did before #522.
 
 **Sequence.**
 
@@ -645,15 +653,22 @@ shared with the host (`threat-model.md` P6).
    cannot be created (`userns`); the environment is exactly the
    allowlist (`env`); `/` holds only the entries in the table above,
    `rootPath` only the path down to the workspace, and the config file,
-   `activityLogPath` and `repositoryPath` cannot be read (`hidden`). On
-   the host: marker files written inside into `rootPath` and
+   `activityLogPath` and `repositoryPath` cannot be read (`hidden`);
+   unless the package is in `buildNetwork`, no network interface but
+   `lo` exists and no abstract Unix socket is reachable (`network`).
+   On the host: marker files written inside into `rootPath` and
    `repositoryPath` are absent (`writes`). A failure fails the build,
-   naming the check.
+   naming the check. The self-test runs under the policy of the build
+   (step 5); the download differs from it only by the network.
 2. **Keys.** `makepkg --printsrcinfo` runs in the sandbox with the
-   workspace read-only. It has the network, like the build: sourcing a
-   PKGBUILD runs its top-level code, which may fetch (some `-bin`
-   packages read their checksums from upstream). Taking the network
-   from PKGBUILD code is P6's. aur-curator reads `validpgpkeys` from
+   workspace read-only and, like the build, without the network unless
+   the package is in `buildNetwork`. Sourcing a PKGBUILD runs its
+   top-level code; code that fetches there (tor-browser-bin reads its
+   checksums with `curl`) gets nothing, and unless the package is listed
+   the build fails here or at step 5. Here when what the fetch leaves
+   behind is not a valid PKGBUILD: tor-browser-bin's quoted `curl` leaves
+   one empty checksum, which makepkg 7 rejects while reading the file
+   (`sha256sums does not allow empty values`). aur-curator reads `validpgpkeys` from
    its output, as `key = value` lines; it never sources the PKGBUILD
    itself. Each value must be a full 40-digit fingerprint, as makepkg
    requires; anything else fails the build, naming the value.
@@ -663,24 +678,51 @@ shared with the host (`threat-model.md` P6).
    GnuPG into a new keybox under `builds/<id>/keyring/`, outside the
    workspace. No keys means no keybox. A key the user's GnuPG does not
    have fails the build, naming its fingerprint.
-4. **Build:** `makepkg --noconfirm --nocolor` in the sandbox.
+4. **Download:** `makepkg --verifysource --nocolor` in the sandbox,
+   with the network and the keybox: it downloads every source, checks
+   its checksums and signatures, and stops. Nothing is extracted and no
+   PKGBUILD function runs.
+5. **Build:** `makepkg --holdver --noconfirm --nocolor` in the sandbox,
+   without the network unless the package is in `buildNetwork`. makepkg
+   finds the downloaded sources, checks them again, extracts them and
+   runs `prepare()`, `pkgver()`, `build()`, `check()` and `package()`.
+   `--holdver` keeps VCS sources at what step 4 fetched.
 
 **Build log.** The first line is written by aur-curator, not makepkg:
 `aur-curator: build environment:` and the names of the variables
 passed, never their values. aur-curator's other lines all start with
 `aur-curator:` too:
 
+- `aur-curator: network: for downloading only` or `aur-curator:
+  network: for the whole build (buildNetwork)`, the second line. Package
+  Details' Build Log header reads it to name the network the build had;
+  a log from before #522 has no such line;
 - `aur-curator: sandbox self-test failed: <check>: <detail>`, one per
   failing check (the build stops there);
 - `aur-curator: sandbox: abstract sockets reachable: <names>`: the
-  abstract Unix sockets (`@` names) the sandbox can still reach. Not a
-  failure until the network is separate (P6);
+  abstract Unix sockets (`@` names) a run that shares the host's network
+  can reach (the download, and every run of a package in
+  `buildNetwork`). In a run without the network, one reachable socket
+  fails the `network` check;
 - `aur-curator: validpgpkeys: <fingerprints>`, when the PKGBUILD names
-  keys, or the reason they could not be used.
+  keys, or the reason they could not be used;
+- `aur-curator: sources downloaded; building without network`, between
+  steps 4 and 5, unless the package is in `buildNetwork`;
+- `aur-curator: this build had no network (#522); if the package needs
+  it, check why in the PKGBUILD, then add <name> to buildNetwork in the
+  config`, after makepkg's output, when step 2 or step 5 fails without
+  the network. On every such failure, not only on a recognised network
+  error: no pattern covers every tool, and some failures (a checksum
+  list fetched at the top level) show none. The same text ends the
+  build's error;
 - `aur-curator: unknown public key <key IDs>: either your copy of
   <fingerprints> is out of date …, or the file is signed by a key not in
   validpgpkeys …`, after makepkg's output, when makepkg failed with
-  `unknown public key` and the PKGBUILD names keys (#514). Every key in
+  `unknown public key` and the PKGBUILD names keys (#514). Signatures
+  are first checked in the download (step 4), so that is where it
+  fails, with the network; the "this build had no network" line above
+  never comes with it.
+  Every key in
   `validpgpkeys` is in the keyring by then (step 3), so the signing key
   ID is in none of their copies: the copy predates the subkey that
   signed, or the signer is another key. The line names both and how to
@@ -693,8 +735,12 @@ passed, never their values. aur-curator's other lines all start with
 - `PATH` entries under `$HOME` (`~/.cargo/bin`, `~/go/bin`) do not
   resolve: a build that needs a toolchain installed only in the home
   directory fails. Install it system-wide.
+- The network, after the sources are downloaded (step 4), unless the
+  package is in `buildNetwork`. A build that downloads anything in
+  `prepare()`, `build()` or `package()` (cargo, go, npm dependencies), or
+  at the top level of its PKGBUILD, fails until it is listed.
 - Language caches in `$HOME` (cargo, npm, go) are empty each time, so
-  those builds download their dependencies again.
+  a build in `buildNetwork` downloads its dependencies again.
 - Nothing from `$HOME` but the one makepkg configuration file.
 - Files that `package()` extracts from an archive as root-owned lose
   that ownership under the user namespace; `tar --no-same-owner` in the
@@ -1018,6 +1064,7 @@ Code: `workspace.go`; loading in `internal/config`.
 | autoMerge | Merge automatically after a successful Approve, with no prompt; otherwise the review stays Approved until the user merges | Optional — defaults to false |
 | autoAnalyzeAfterImport | Run analyzers automatically after a successful Import (Import's clone already establishes `upstream/master`, so no Fetch is needed). A failed auto-analyze is reported but does not undo Import | Optional — defaults to false |
 | activityLogPath | The always-on, append-only activity log | Optional — defaults to `<rootPath>/.aur-curator/activity.log` |
+| buildNetwork | Packages whose builds have the network in every run, not only while the sources are downloaded (§ Build → Build Environment, #522). For a package that needs it after downloading, such as one that fetches its dependencies in `build()`. Not part of the review: it holds across PKGBUILD updates | Optional — defaults to none |
 | builderBackend | Builder implementation. `makepkg` is the only one, and it always runs in the bubblewrap sandbox (§ Build → Build Environment, #496); there is no unsandboxed value | Optional — defaults to `makepkg`; any other value is an error (#408) |
 
 The activity log (one human-readable line per lifecycle event — import,
@@ -1082,6 +1129,11 @@ before it is checked or used.
 | giteaToken | See § Secret Handling: a blank value counts as not set |
 | repoDBName | A plain file name (no `/`) ending in `.db.tar.gz`, with a name before `.db`. `repo-add` accepts other compressions, but `internal/repodb` reads gzip only |
 | builderBackend | `makepkg` |
+| buildNetwork | A list of strings; each, after trimming, matches the AUR's package-name rule (§ Package → Name, #504). A name listed twice counts once |
+
+`check` reports a `buildNetwork` name that is not a curated package
+(`workflow.md` § Check (Consistency)): it gives nothing the network, so
+it is a finding, not an error.
 
 **Not checked:** whether directories exist (Publish creates the repository
 directory; the code that uses a path reports its errors), duplicate keys

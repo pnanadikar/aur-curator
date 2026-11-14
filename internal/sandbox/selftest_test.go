@@ -28,13 +28,13 @@ func TestFinishReport(t *testing.T) {
 	tg := Targets{RootPath: t.TempDir(), RepositoryPath: t.TempDir()}
 	all := "ok sockets\nok keyring\nok nnp\nok userns\nok env\nok hidden\n"
 
-	rep, err := finishReport(all, "", nil, "m", tg)
+	rep, err := finishReport(all, "", nil, "m", tg, false)
 	if err != nil || len(rep.Results) != 7 || len(rep.Failed()) != 0 {
 		t.Fatalf("all ok: %v %+v", err, rep)
 	}
 
 	// A check the probe never reported fails: a crash midway is not a pass.
-	rep, err = finishReport("ok sockets\nok keyring\n", "", errors.New("exit status 2"), "m", tg)
+	rep, err = finishReport("ok sockets\nok keyring\n", "", errors.New("exit status 2"), "m", tg, false)
 	if err == nil || !strings.Contains(err.Error(), "nnp") || !strings.Contains(err.Error(), "hidden") {
 		t.Fatalf("missing checks: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestFinishReport(t *testing.T) {
 	}
 
 	// Nothing at all from the probe and an error: the sandbox did not start.
-	rep, err = finishReport("", "bwrap: No permissions to create new namespace\n", errors.New("exit status 1"), "m", tg)
+	rep, err = finishReport("", "bwrap: No permissions to create new namespace\n", errors.New("exit status 1"), "m", tg, false)
 	if err == nil || !strings.Contains(err.Error(), "No permissions") || rep.Results[0].Check != "start" {
 		t.Fatalf("no start: %v %+v", err, rep)
 	}

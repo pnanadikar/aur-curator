@@ -28,6 +28,22 @@ type Engine struct {
 	artStore domain.ArtifactStore
 	git      git.Provider
 	paths    *store.StorePaths
+	// network holds the packages whose builds keep the network (#522).
+	network map[domain.PackageName]bool
+}
+
+// EngineOption configures an Engine.
+type EngineOption func(*Engine)
+
+// WithBuildNetwork names the packages whose builds have the network in
+// every run, not only while their sources are downloaded: the config's
+// buildNetwork (#522).
+func WithBuildNetwork(names []domain.PackageName) EngineOption {
+	return func(e *Engine) {
+		for _, n := range names {
+			e.network[n] = true
+		}
+	}
 }
 
 // NewEngine constructs a Build Engine.
@@ -37,14 +53,20 @@ func NewEngine(
 	artStore domain.ArtifactStore,
 	gitProvider git.Provider,
 	paths *store.StorePaths,
+	opts ...EngineOption,
 ) *Engine {
-	return &Engine{
+	e := &Engine{
 		builder:  builder,
 		store:    buildStore,
 		artStore: artStore,
 		git:      gitProvider,
 		paths:    paths,
+		network:  map[domain.PackageName]bool{},
 	}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
 }
 
 // BuildStore returns the BuildStore used by this engine.
@@ -153,7 +175,7 @@ func (e *Engine) RunBuild(ctx context.Context, pkgName domain.PackageName) (*dom
 	trace.Log(ctx, "build", "state", "started", "pkg", string(pkgName), "buildID", string(build.ID), "log", logPath)
 
 	// 6. Execute the build.
-	result, err := e.builder.Build(ctx, workspaceDir, logPath)
+	result, err := e.builder.Build(ctx, workspaceDir, logPath, BuildOptions{Package: pkgName, Network: e.network[pkgName]})
 	if err != nil {
 		// 7a. On cancel: restore previous record, clean up, do NOT touch failure state.
 		if errors.Is(err, context.Canceled) {

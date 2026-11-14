@@ -70,6 +70,12 @@ type WorkspaceConfig struct {
 	// internal/trace (opt-in, developer diagnostic). The activity log is
 	// always-on, success and failure, human-readable, pacman-log-style.
 	ActivityLogPath string `json:"activityLogPath"`
+
+	// BuildNetwork lists the packages whose builds have the network in
+	// every makepkg run, not only while their sources are downloaded
+	// (#522; domain.md § Build → Build Environment). Optional — none by
+	// default. config.Load checks each name and drops repeats.
+	BuildNetwork []PackageName `json:"buildNetwork"`
 }
 
 // Workspace represents the top-level collection of packages managed
