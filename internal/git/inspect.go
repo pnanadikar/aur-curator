@@ -112,11 +112,16 @@ func parseStatus(out string) *RepositoryStatus {
 
 // FileAtCommit returns the content of a file at a specific commit in
 // packageName's repository, via `git show <commit>:<path>`. Returns
-// the raw file content as a string.
+// the raw file content as a string. commit must be a full commit hash;
+// anything else is an error, and git is not run (#504).
 func (p *provider) FileAtCommit(ctx context.Context, packageName domain.PackageName, commit, path string) (string, error) {
 	repo, err := p.repoPath(ctx, packageName)
 	if err != nil {
 		return "", fmt.Errorf("resolve repository %q: %w", packageName, err)
+	}
+
+	if err := checkFullHash(commit); err != nil {
+		return "", fmt.Errorf("file at commit %q %q: %w", packageName, path, err)
 	}
 
 	out, err := p.runner.Run(ctx, repo, "show", commit+":"+path)

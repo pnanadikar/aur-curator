@@ -22,11 +22,10 @@ func NewReviewStore(paths *store.StorePaths) *ReviewStore {
 
 // Get reads the stored review for a package.
 func (s *ReviewStore) Get(pkgName domain.PackageName) (*domain.Review, error) {
-	if pkgName == "" {
-		return nil, fmt.Errorf("empty package name")
+	path, err := s.paths.ReviewPath(pkgName)
+	if err != nil {
+		return nil, err
 	}
-
-	path := s.paths.ReviewPath(pkgName)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -44,14 +43,14 @@ func (s *ReviewStore) Get(pkgName domain.PackageName) (*domain.Review, error) {
 
 // Save overwrites the stored review for a package.
 func (s *ReviewStore) Save(pkgName domain.PackageName, review *domain.Review) error {
-	if pkgName == "" {
-		return fmt.Errorf("empty package name")
-	}
 	if review == nil {
 		return fmt.Errorf("save review for %s: nil review", pkgName)
 	}
 
-	dir := s.paths.PackageDir(pkgName)
+	dir, err := s.paths.PackageDir(pkgName)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create review directory %s: %w", dir, err)
 	}
@@ -62,7 +61,11 @@ func (s *ReviewStore) Save(pkgName domain.PackageName, review *domain.Review) er
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(s.paths.ReviewPath(pkgName), data, 0o600); err != nil {
+	file, err := s.paths.ReviewPath(pkgName)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(file, data, 0o600); err != nil {
 		return fmt.Errorf("write review for %s: %w", pkgName, err)
 	}
 	return nil
@@ -70,10 +73,11 @@ func (s *ReviewStore) Save(pkgName domain.PackageName, review *domain.Review) er
 
 // Delete removes the stored review for a package, if present.
 func (s *ReviewStore) Delete(pkgName domain.PackageName) error {
-	if pkgName == "" {
-		return fmt.Errorf("empty package name")
+	file, err := s.paths.ReviewPath(pkgName)
+	if err != nil {
+		return err
 	}
-	if err := os.Remove(s.paths.ReviewPath(pkgName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("delete review for %s: %w", pkgName, err)
 	}
 	return nil

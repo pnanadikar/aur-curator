@@ -69,11 +69,17 @@ make install
 ```
 
 This builds the binary and installs it to `~/.local/bin/aur-curator`
-(make sure `~/.local/bin` is on your `PATH`). To install elsewhere:
+(make sure `~/.local/bin` is on your `PATH`). If fish is installed, it also
+installs a fish completion to `~/.config/fish/completions/` (or under
+`$XDG_CONFIG_HOME`). To install elsewhere:
 
 ```sh
 sudo make install PREFIX=/usr/local
 ```
+
+As root, the fish completion is not installed; copy
+`contrib/completions/aur-curator.fish` to `~/.config/fish/completions/`
+yourself.
 
 Check it works:
 
@@ -206,7 +212,8 @@ aur-curator [flags] <config-file> check                  run consistency checks
 aur-curator [flags] <config-file> remove <package-name>  stop curating a package
 ```
 
-Run `aur-curator --help` for flags and details.
+`aur-curator --help` lists the commands, flags and environment variables;
+`aur-curator --help=full` (or `?` in the TUI) shows the full guide.
 
 ### Curating your first package
 

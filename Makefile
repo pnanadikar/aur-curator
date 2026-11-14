@@ -5,6 +5,9 @@ BIN := $(BIN_DIR)/$(APP)
 BIN_DEBUG := $(BIN_DIR)/$(APP)-debug
 CONFIG ?=
 PREFIX ?= $(HOME)/.local
+# fish completion (#511): installed by make install when fish is present.
+FISH_COMPLETION := contrib/completions/$(APP).fish
+FISH_COMPLETION_DIR := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/fish/completions
 
 # Version from the nearest vMAJOR.MINOR.PATCH tag: "v1.0.0" on a tagged
 # commit, "v1.0.0-5-g1a2b3c4" after it, "-dirty" with uncommitted changes.
@@ -19,8 +22,8 @@ help:
 		'Available targets:' \
 		'  build        Build the optimized production app to $(BIN)' \
 		'  debug-build  Build the unoptimized debug app to $(BIN_DEBUG)' \
-		'  install      Build, then install $(APP) to $(PREFIX)/bin (override with PREFIX=...)' \
-		'  uninstall    Remove $(PREFIX)/bin/$(APP)' \
+		'  install      Build, then install $(APP) to $(PREFIX)/bin (override with PREFIX=...) and the fish completion' \
+		'  uninstall    Remove $(PREFIX)/bin/$(APP) and the fish completion' \
 		'  test-build   Build to $(BIN_DEBUG) and run make test && make lint' \
 		'  test-ui      Run go test ./internal/ui/... -v' \
 		'  test         Run go test ./...' \
@@ -48,9 +51,17 @@ debug-build:
 
 install: build
 	install -Dm755 $(BIN) $(PREFIX)/bin/$(APP)
+	@if ! command -v fish >/dev/null 2>&1; then \
+		echo 'fish not found: fish completion not installed'; \
+	elif [ "$$(id -u)" = 0 ]; then \
+		echo 'running as root: fish completion not installed; as your user, copy $(FISH_COMPLETION) to ~/.config/fish/completions/'; \
+	else \
+		install -Dm644 $(FISH_COMPLETION) $(FISH_COMPLETION_DIR)/$(APP).fish && \
+		echo 'fish completion installed to $(FISH_COMPLETION_DIR)/$(APP).fish'; \
+	fi
 
 uninstall:
-	rm -f $(PREFIX)/bin/$(APP)
+	rm -f $(PREFIX)/bin/$(APP) $(FISH_COMPLETION_DIR)/$(APP).fish
 
 test-build: debug-build
 	@$(MAKE) test

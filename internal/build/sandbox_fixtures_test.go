@@ -233,6 +233,10 @@ package() { install -Dm644 data.txt "$pkgdir/usr/share/signed/data.txt"; }
 				if err == nil {
 					t.Fatalf("a tampered source built:\n%s", log)
 				}
+				// A bad signature keeps makepkg's message (#514).
+				if strings.Contains(log, "unknown public key") || strings.Contains(err.Error(), "out of date") {
+					t.Errorf("a bad signature got the stale-key hint: %v\n%s", err, log)
+				}
 				return
 			}
 			if err != nil {
@@ -242,6 +246,117 @@ package() { install -Dm644 data.txt "$pkgdir/usr/share/signed/data.txt"; }
 				t.Errorf("log does not name the key:\n%s", log)
 			}
 		})
+	}
+}
+
+// A key whose local copy predates the subkey that signed: makepkg fails
+// with "unknown public key <subkey ID>", and aur-curator adds the hint
+// naming the key (#514). The keyring has the key, so the build gets past
+// exportKeys; the copy lacks the signing subkey, as the user's Tor key
+// lacked the subkey created 11 Aug 2026.
+func TestSandboxFixtureStaleKey(t *testing.T) {
+	f := newRealFixture(t, "")
+	gnupgHome(t, true)
+	fpr := genKey(t, "Upstream <up@example.org>")
+	gpg := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("gpg", append([]string{"--batch"}, args...)...).Output()
+		if err != nil {
+			t.Fatalf("gpg %v: %v", args, err)
+		}
+		return string(out)
+	}
+	gpg("--passphrase", "", "--quick-add-key", fpr, "ed25519", "sign", "never")
+	var subID, subFpr string
+	inSub := false
+	for _, line := range strings.Split(gpg("--with-colons", "--list-keys", fpr), "\n") {
+		f := strings.Split(line, ":")
+		switch {
+		case f[0] == "sub" && len(f) > 4:
+			subID, inSub = f[4], true
+		case f[0] == "fpr" && inSub && len(f) > 9:
+			subFpr, inSub = f[9], false
+		}
+	}
+	if subID == "" || subFpr == "" {
+		t.Fatal("no signing subkey")
+	}
+
+	data := filepath.Join(f.ws, "data.txt")
+	if err := os.WriteFile(data, []byte("upstream release\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gpg("--local-user", subID+"!", "--detach-sign", data)
+
+	// The stale copy: the key without its signing subkey, in place of
+	// the whole key.
+	stale := gpg("--export-filter", "drop-subkey=fpr = "+subFpr, "--export", fpr)
+	gpg("--yes", "--delete-secret-and-public-key", fpr)
+	imp := exec.Command("gpg", "--batch", "--import")
+	imp.Stdin = strings.NewReader(stale)
+	if out, err := imp.CombinedOutput(); err != nil {
+		t.Fatalf("import the stale copy: %v: %s", err, out)
+	}
+	if strings.Contains(gpg("--with-colons", "--list-keys", fpr), "\nsub:") {
+		t.Fatal("the stale copy still has the subkey")
+	}
+
+	writePKGBUILD(t, f, `pkgname=signed
+pkgver=1
+pkgrel=1
+arch=(any)
+source=(data.txt data.txt.sig)
+sha256sums=(SKIP SKIP)
+validpgpkeys=(`+fpr+`)
+package() { install -Dm644 data.txt "$pkgdir/usr/share/signed/data.txt"; }
+`)
+	_, log, err := f.build(t)
+	if err == nil {
+		t.Fatalf("built with a stale key:\n%s", log)
+	}
+	if !strings.Contains(log, "FAILED (unknown public key "+subID+")") {
+		t.Fatalf("makepkg did not report the subkey as unknown:\n%s", log)
+	}
+	want := "unknown public key " + subID + ": either your copy of " + fpr + " is out of date"
+	if !strings.Contains(log, "aur-curator: "+want) {
+		t.Errorf("log lacks the hint %q:\n%s", want, log)
+	}
+	if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "gpg --refresh-keys "+fpr) {
+		t.Errorf("error lacks the hint: %v", err)
+	}
+}
+
+// A signed source with no validpgpkeys: the sandbox has no keyring, so
+// makepkg reports the key as unknown, and there is no stale-key hint:
+// there is no copy to be out of date (#514).
+func TestSandboxFixtureNoValidPGPKeys(t *testing.T) {
+	f := newRealFixture(t, "")
+	gnupgHome(t, true)
+	genKey(t, "Upstream <up@example.org>")
+	data := filepath.Join(f.ws, "data.txt")
+	if err := os.WriteFile(data, []byte("upstream release\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("gpg", "--batch", "--detach-sign", data).CombinedOutput(); err != nil {
+		t.Fatalf("sign: %v: %s", err, out)
+	}
+	writePKGBUILD(t, f, `pkgname=signed
+pkgver=1
+pkgrel=1
+arch=(any)
+source=(data.txt data.txt.sig)
+sha256sums=(SKIP SKIP)
+package() { install -Dm644 data.txt "$pkgdir/usr/share/signed/data.txt"; }
+`)
+	_, log, err := f.build(t)
+	if err == nil {
+		t.Fatalf("built with no key to check against:\n%s", log)
+	}
+	if !strings.Contains(log, "unknown public key") {
+		t.Fatalf("makepkg did not report an unknown key:\n%s", log)
+	}
+	if strings.Contains(log, "out of date") || strings.Contains(err.Error(), "out of date") {
+		t.Errorf("hint with no validpgpkeys: %v\n%s", err, log)
 	}
 }
 

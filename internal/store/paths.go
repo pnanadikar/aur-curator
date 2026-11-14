@@ -1,9 +1,11 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/pramod/aur-curator/internal/domain"
+	"github.com/pramod/aur-curator/internal/pkgname"
 )
 
 // StorePaths is the single owner of all .aur-curator/ path
@@ -30,24 +32,38 @@ func (p *StorePaths) PackagesDir() string {
 	return filepath.Join(p.workspace, ".aur-curator", "packages")
 }
 
-// PackageDir returns the per-package data directory.
-func (p *StorePaths) PackageDir(pkg domain.PackageName) string {
-	return filepath.Join(p.PackagesDir(), string(pkg))
+// PackageDir returns the per-package data directory. The name is checked
+// against the AUR's rule first (pkgname.Check, #504): every store path for
+// a package goes through here, so no name can reach outside PackagesDir.
+func (p *StorePaths) PackageDir(pkg domain.PackageName) (string, error) {
+	if err := pkgname.Check(string(pkg)); err != nil {
+		return "", fmt.Errorf("store: %w", err)
+	}
+	return filepath.Join(p.PackagesDir(), string(pkg)), nil
+}
+
+// packageFile returns the path of file in pkg's data directory.
+func (p *StorePaths) packageFile(pkg domain.PackageName, file string) (string, error) {
+	dir, err := p.PackageDir(pkg)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, file), nil
 }
 
 // ReviewPath returns the path to a package's review.json file.
-func (p *StorePaths) ReviewPath(pkg domain.PackageName) string {
-	return filepath.Join(p.PackageDir(pkg), "review.json")
+func (p *StorePaths) ReviewPath(pkg domain.PackageName) (string, error) {
+	return p.packageFile(pkg, "review.json")
 }
 
 // BuildPath returns the path to a package's build.json file.
-func (p *StorePaths) BuildPath(pkg domain.PackageName) string {
-	return filepath.Join(p.PackageDir(pkg), "build.json")
+func (p *StorePaths) BuildPath(pkg domain.PackageName) (string, error) {
+	return p.packageFile(pkg, "build.json")
 }
 
 // LastSuccessBuildPath returns the path to a package's last-success.json file.
-func (p *StorePaths) LastSuccessBuildPath(pkg domain.PackageName) string {
-	return filepath.Join(p.PackageDir(pkg), "last-success.json")
+func (p *StorePaths) LastSuccessBuildPath(pkg domain.PackageName) (string, error) {
+	return p.packageFile(pkg, "last-success.json")
 }
 
 // Workspace-level data

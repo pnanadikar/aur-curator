@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 
+	"github.com/pramod/aur-curator/internal/catalog"
 	"github.com/pramod/aur-curator/internal/domain"
 )
 
@@ -51,11 +52,11 @@ type fakeCatalog struct {
 	pkgs     []domain.PackageName
 }
 
-func (f *fakeCatalog) Packages(_ context.Context) ([]domain.PackageName, error) {
+func (f *fakeCatalog) Packages(_ context.Context) ([]domain.PackageName, []catalog.Rejected, error) {
 	if f.pkgs == nil {
-		return []domain.PackageName{"placeholder"}, nil
+		return []domain.PackageName{"placeholder"}, nil, nil
 	}
-	return f.pkgs, f.err
+	return f.pkgs, nil, f.err
 }
 
 func (f *fakeCatalog) RepositoryPath(domain.PackageName) (string, error) {

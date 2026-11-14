@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pramod/aur-curator/internal/domain"
+	"github.com/pramod/aur-curator/internal/pkgname"
 )
 
 func TestPackages(t *testing.T) {
@@ -14,6 +16,7 @@ func TestPackages(t *testing.T) {
 		name         string
 		entries      []entry // file/dir names to create (dir=true means directory)
 		wantPackages []string
+		wantRejected []string
 		wantErr      bool
 	}{
 		{
@@ -52,6 +55,19 @@ func TestPackages(t *testing.T) {
 			wantErr:      false,
 		},
 		{
+			name: "invalid names are rejected, not listed (#504)",
+			entries: []entry{
+				{name: "yay", isDir: true},
+				{name: "Foo", isDir: true},
+				{name: "a b", isDir: true},
+				{name: "_x", isDir: true},
+				{name: "mlt++", isDir: true},
+				{name: "Bad.txt", isDir: false},
+			},
+			wantPackages: []string{"mlt++", "yay"},
+			wantRejected: []string{"Foo", "_x", "a b"},
+		},
+		{
 			name:         "nonexistent root path returns error",
 			entries:      nil,
 			wantPackages: nil,
@@ -67,7 +83,7 @@ func TestPackages(t *testing.T) {
 			if tt.name == "nonexistent root path returns error" {
 				catalog := NewFilesystemCatalog(filepath.Join(root, "does-not-exist"))
 				ctx := context.Background()
-				pkgs, err := catalog.Packages(ctx)
+				pkgs, _, err := catalog.Packages(ctx)
 				if (err != nil) != tt.wantErr {
 					t.Fatalf("Packages() error = %v, wantErr = %v", err, tt.wantErr)
 				}
@@ -93,10 +109,18 @@ func TestPackages(t *testing.T) {
 
 			catalog := NewFilesystemCatalog(root)
 			ctx := context.Background()
-			pkgs, err := catalog.Packages(ctx)
+			pkgs, rejected, err := catalog.Packages(ctx)
 
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Packages() error = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if len(rejected) != len(tt.wantRejected) {
+				t.Fatalf("Packages() rejected %+v, want %v", rejected, tt.wantRejected)
+			}
+			for i, want := range tt.wantRejected {
+				if rejected[i].Name != want || rejected[i].Err == nil || !strings.Contains(rejected[i].Err.Error(), pkgname.Rule) {
+					t.Errorf("rejected[%d] = %+v, want %q with an error naming the rule", i, rejected[i], want)
+				}
 			}
 			if len(pkgs) != len(tt.wantPackages) {
 				t.Fatalf("Packages() returned %d packages, want %d", len(pkgs), len(tt.wantPackages))
@@ -126,7 +150,7 @@ func TestPackages_ContextCancelled(t *testing.T) {
 	cancel() // cancel before calling Packages
 
 	catalog := NewFilesystemCatalog(root)
-	pkgs, err := catalog.Packages(ctx)
+	pkgs, _, err := catalog.Packages(ctx)
 	if err == nil {
 		t.Fatal("Packages() expected context error, got nil")
 	}

@@ -145,9 +145,17 @@ func (b MakepkgBuilder) build(ctx context.Context, workspaceDir, logPath string,
 	// 4. The build.
 	stderr.Reset()
 	trace.Log(ctx, "handoff", "to", "subprocess", "from", "builder", "cmd", "makepkg", "backend", Backend, "env", strings.Join(names, ","))
-	if err := b.run(ctx, policy, logFile, io.MultiWriter(logFile, &stderr), "makepkg", "--noconfirm", "--nocolor"); err != nil {
+	var unknownKeys unknownKeyWatcher
+	if err := b.run(ctx, policy, logFile, io.MultiWriter(logFile, &stderr, &unknownKeys), "makepkg", "--noconfirm", "--nocolor"); err != nil {
 		if ctx.Err() != nil {
 			return BuildResult{}, fmt.Errorf("makepkg cancelled: %w", ctx.Err())
+		}
+		// Every key in validpgpkeys is in the keyring (exportKeys), so an
+		// unknown key is a stale copy or another signer: say both (#514).
+		if ids := unknownKeys.IDs(); len(ids) > 0 && len(keys) > 0 {
+			hint := staleKeyHint(ids, keys)
+			writeLog(logFile, "aur-curator: "+hint)
+			return BuildResult{}, fmt.Errorf("makepkg failed: %w: %s; %s", err, sanitize.ForMessage(stderr.String()), hint)
 		}
 		return BuildResult{}, fmt.Errorf("makepkg failed: %w: %s", err, sanitize.ForMessage(stderr.String()))
 	}

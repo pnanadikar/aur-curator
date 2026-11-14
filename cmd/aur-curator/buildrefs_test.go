@@ -71,11 +71,11 @@ func TestPackageBuildRefs(t *testing.T) {
 		{
 			name: "corrupt build.json",
 			setup: func(dir string, paths *store.StorePaths, bs *jsonstore.BuildStore) {
-				pkgDir := paths.PackageDir("foo")
+				pkgDir := mustPath(paths.PackageDir("foo"))
 				if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(paths.BuildPath("foo"), []byte("{bad"), 0o644); err != nil {
+				if err := os.WriteFile(mustPath(paths.BuildPath("foo")), []byte("{bad"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -90,11 +90,11 @@ func TestPackageBuildRefs(t *testing.T) {
 				if err := bs.Save("foo", b); err != nil {
 					t.Fatal(err)
 				}
-				pkgDir := paths.PackageDir("foo")
+				pkgDir := mustPath(paths.PackageDir("foo"))
 				if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(paths.LastSuccessBuildPath("foo"), []byte("{bad"), 0o644); err != nil {
+				if err := os.WriteFile(mustPath(paths.LastSuccessBuildPath("foo")), []byte("{bad"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -224,7 +224,7 @@ func TestCollectBuildRefs(t *testing.T) {
 	t.Run("corrupt build record", func(t *testing.T) {
 		t.Parallel()
 		_, paths, bs, as := sweepStores(t)
-		mustWrite(t, paths.BuildPath("foo"), "{bad")
+		mustWrite(t, mustPath(paths.BuildPath("foo")), "{bad")
 
 		_, err := collectBuildRefs(bs, as, []domain.PackageName{"foo"})
 		if err == nil || !strings.Contains(err.Error(), "package foo") {
@@ -276,7 +276,7 @@ func TestSweepOrphanBuildDirs(t *testing.T) {
 	t.Run("unreadable record deletes nothing", func(t *testing.T) {
 		t.Parallel()
 		dir, paths, bs, as := sweepStores(t)
-		mustWrite(t, paths.BuildPath("foo"), "{bad")
+		mustWrite(t, mustPath(paths.BuildPath("foo")), "{bad")
 		mustWrite(t, filepath.Join(paths.BuildArtifactsDir("orphan"), "build.log"), "log")
 
 		removed, findings := sweepOrphanBuildDirs(context.Background(), filepath.Join(dir, "activity.log"), paths, bs, as, []domain.PackageName{"foo"})

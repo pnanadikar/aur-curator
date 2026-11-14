@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/pramod/aur-curator/internal/aurinfo"
+	"github.com/pramod/aur-curator/internal/catalog"
 	"github.com/pramod/aur-curator/internal/domain"
 )
 
@@ -58,6 +59,17 @@ type pkgReason struct {
 // Reasons a package is not checked: a property of the package, true on
 // every run, so it does not affect the exit status (workflow.md § Update).
 const reasonNotOnAUR = "not on the AUR"
+
+// rejectedReasons turns the directories the catalog rejected (#504) into
+// update's "not checked" entries. The reason is pkgname.Check's error,
+// which names the directory and the rule.
+func rejectedReasons(rejected []catalog.Rejected) []pkgReason {
+	out := make([]pkgReason, 0, len(rejected))
+	for _, r := range rejected {
+		out = append(out, pkgReason{domain.PackageName(r.Name), r.Err.Error()})
+	}
+	return out
+}
 
 // updatePlan is what update offers, in the order it offers it, and what
 // the scan found about every other package (workflow.md § Update).

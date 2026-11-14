@@ -22,11 +22,10 @@ func NewBuildStore(paths *store.StorePaths) *BuildStore {
 
 // Get reads the stored build for a package.
 func (s *BuildStore) Get(pkgName domain.PackageName) (*domain.Build, error) {
-	if pkgName == "" {
-		return nil, fmt.Errorf("empty package name")
+	path, err := s.paths.BuildPath(pkgName)
+	if err != nil {
+		return nil, err
 	}
-
-	path := s.paths.BuildPath(pkgName)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -46,11 +45,10 @@ func (s *BuildStore) Get(pkgName domain.PackageName) (*domain.Build, error) {
 // If the file does not exist and the latest attempt is a success, returns
 // the latest attempt (read-only; does not write a new file).
 func (s *BuildStore) GetLastSuccess(pkgName domain.PackageName) (*domain.Build, error) {
-	if pkgName == "" {
-		return nil, fmt.Errorf("empty package name")
+	path, err := s.paths.LastSuccessBuildPath(pkgName)
+	if err != nil {
+		return nil, err
 	}
-
-	path := s.paths.LastSuccessBuildPath(pkgName)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -79,14 +77,14 @@ func (s *BuildStore) GetLastSuccess(pkgName domain.PackageName) (*domain.Build, 
 
 // SaveLastSuccess persists the build as the last-known-success record.
 func (s *BuildStore) SaveLastSuccess(pkgName domain.PackageName, build *domain.Build) error {
-	if pkgName == "" {
-		return fmt.Errorf("empty package name")
-	}
 	if build == nil {
 		return fmt.Errorf("save last-success build for %s: nil build", pkgName)
 	}
 
-	dir := s.paths.PackageDir(pkgName)
+	dir, err := s.paths.PackageDir(pkgName)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create last-success build directory %s: %w", dir, err)
 	}
@@ -97,7 +95,11 @@ func (s *BuildStore) SaveLastSuccess(pkgName domain.PackageName, build *domain.B
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(s.paths.LastSuccessBuildPath(pkgName), data, 0o600); err != nil {
+	file, err := s.paths.LastSuccessBuildPath(pkgName)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(file, data, 0o600); err != nil {
 		return fmt.Errorf("write last-success build for %s: %w", pkgName, err)
 	}
 	return nil
@@ -105,14 +107,14 @@ func (s *BuildStore) SaveLastSuccess(pkgName domain.PackageName, build *domain.B
 
 // Save overwrites the stored build for a package.
 func (s *BuildStore) Save(pkgName domain.PackageName, build *domain.Build) error {
-	if pkgName == "" {
-		return fmt.Errorf("empty package name")
-	}
 	if build == nil {
 		return fmt.Errorf("save build for %s: nil build", pkgName)
 	}
 
-	dir := s.paths.PackageDir(pkgName)
+	dir, err := s.paths.PackageDir(pkgName)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create build directory %s: %w", dir, err)
 	}
@@ -123,7 +125,11 @@ func (s *BuildStore) Save(pkgName domain.PackageName, build *domain.Build) error
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(s.paths.BuildPath(pkgName), data, 0o600); err != nil {
+	file, err := s.paths.BuildPath(pkgName)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(file, data, 0o600); err != nil {
 		return fmt.Errorf("write build for %s: %w", pkgName, err)
 	}
 	return nil
@@ -131,10 +137,11 @@ func (s *BuildStore) Save(pkgName domain.PackageName, build *domain.Build) error
 
 // Delete removes the stored build for a package, if present.
 func (s *BuildStore) Delete(pkgName domain.PackageName) error {
-	if pkgName == "" {
-		return fmt.Errorf("empty package name")
+	file, err := s.paths.BuildPath(pkgName)
+	if err != nil {
+		return err
 	}
-	if err := os.Remove(s.paths.BuildPath(pkgName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("delete build for %s: %w", pkgName, err)
 	}
 	return nil

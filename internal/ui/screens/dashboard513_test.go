@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pramod/aur-curator/internal/catalog"
 	"github.com/pramod/aur-curator/internal/deps"
 	"github.com/pramod/aur-curator/internal/domain"
 	"github.com/pramod/aur-curator/internal/git"
@@ -135,8 +136,8 @@ func TestLoadPackagesCatalogErrorLogged513(t *testing.T) {
 
 type failingCatalog513 struct{}
 
-func (failingCatalog513) Packages(context.Context) ([]domain.PackageName, error) {
-	return nil, errors.New("catalog: unreadable")
+func (failingCatalog513) Packages(context.Context) ([]domain.PackageName, []catalog.Rejected, error) {
+	return nil, nil, errors.New("catalog: unreadable")
 }
 
 func (failingCatalog513) RepositoryPath(domain.PackageName) (string, error) { return "", nil }

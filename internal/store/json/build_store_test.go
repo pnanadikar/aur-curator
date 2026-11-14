@@ -109,12 +109,12 @@ func TestBuildStoreGetLastSuccessReadPermissionDenied(t *testing.T) {
 	paths := store.NewStorePaths(workspace)
 	bstore := NewBuildStore(paths)
 
-	lastSuccessDir := filepath.Dir(paths.LastSuccessBuildPath("yay"))
+	lastSuccessDir := filepath.Dir(mustPath(paths.LastSuccessBuildPath("yay")))
 	if err := os.MkdirAll(lastSuccessDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	lastSuccessPath := paths.LastSuccessBuildPath("yay")
+	lastSuccessPath := mustPath(paths.LastSuccessBuildPath("yay"))
 	if err := os.WriteFile(lastSuccessPath, []byte(`{"id":"abc"}`), 0o000); err != nil {
 		t.Fatal(err)
 	}

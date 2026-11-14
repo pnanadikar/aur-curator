@@ -23,7 +23,7 @@ documentation. For installing and using aur-curator, see the
 | `make build` | Optimized binary in `bin/aur-curator`. |
 | `make debug-build` | Unoptimized binary (`bin/aur-curator-debug`) for a debugger. |
 | `make run CONFIG=<path>` | Run from source against a config file. |
-| `make install` | Build and install to `~/.local/bin` (`PREFIX=` to change). |
+| `make install` | Build and install to `~/.local/bin` (`PREFIX=` to change), and the fish completion when fish is installed. |
 | `make test` | `go test ./...` |
 | `make test-race` | `go test -race ./...` (needs cgo; slower). |
 | `make test-sandbox` | Hostile fixture PKGBUILDs built in the real build sandbox: each attack must fail (#496). Needs bwrap and makepkg; run as a normal user. |
@@ -224,7 +224,8 @@ copy of your real config rather than the config you use.
 ## Code layout
 
 ```text
-cmd/aur-curator/        entry point, CLI commands, composition root
+cmd/aur-curator/        entry point, CLI commands, composition root;
+                        cli.go: the command and flag table (#511)
 
 Domain and workflow
 internal/domain/        domain structs (and store interfaces) only — no logic
@@ -262,6 +263,7 @@ internal/debug/         debug log (--debug-log)
 internal/version/       version string, set at build time
 
 tools/tracecheck/       key/value argument checker for logging calls
+contrib/completions/    fish completion, generated from cli.go (#511)
 docs/                   design documentation
 ```
 

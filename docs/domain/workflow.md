@@ -826,7 +826,8 @@ sandbox, which runs no package code.
 | --- | --- | --- |
 | 0 | Workspace root or `.aur-curator/` missing or not a directory | Fails immediately (exit 1) |
 | 1 | A catalog package with no Review record, or an unreadable one | Report |
-| 1 | `.aur-curator/packages/<pkg>/` for a package no longer in the catalog | Delete |
+| 1 | A directory in the workspace root whose name is not a package name (`domain.md` § Package → Name) | Report |
+| 1 | `.aur-curator/packages/<pkg>/` for a package no longer in the catalog | Delete. A directory there whose name is not a package name is reported, never deleted (#504). |
 | 2 | A Build record listing an artifact ID whose record is missing | Remove the reference. A reference to an artifact record that exists but cannot be read is kept and reported. |
 | 2 | Artifact records for packages no longer in the catalog | Delete |
 | 2 | Artifact records from builds other than the package's last success | Delete |

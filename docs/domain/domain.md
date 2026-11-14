@@ -137,6 +137,21 @@ These relationships are resolved through the stores, keyed by name. The
 `LatestBuildID` fields, is unused (§ Go Mapping → Concepts Without a Live
 Go Type).
 
+### Name
+
+A package name follows the AUR's rule: lowercase letters, digits and
+`. + _ -`, starting with a letter or a digit (`^[a-z0-9][a-z0-9.+_-]*$`,
+as aurweb checks it; stricter than makepkg's, which also allows `@`).
+Every valid name is a single path element that cannot start with `-`.
+One check, `internal/pkgname`, is applied wherever a name enters (#504):
+
+- the CLI's `<package-name>` argument (`import`, `remove`): a usage
+  error, before the config is read;
+- the catalog scan: a directory in `rootPath` with any other name is not
+  a package; it is reported (`interfaces.md` § Package Catalog);
+- the store: `StorePaths.PackageDir`, and every per-package store path
+  built on it, refuses any other name.
+
 ### Lifecycle
 
 ```text
@@ -662,6 +677,16 @@ passed, never their values. aur-curator's other lines all start with
   failure until the network is separate (P6);
 - `aur-curator: validpgpkeys: <fingerprints>`, when the PKGBUILD names
   keys, or the reason they could not be used.
+- `aur-curator: unknown public key <key IDs>: either your copy of
+  <fingerprints> is out of date …, or the file is signed by a key not in
+  validpgpkeys …`, after makepkg's output, when makepkg failed with
+  `unknown public key` and the PKGBUILD names keys (#514). Every key in
+  `validpgpkeys` is in the keyring by then (step 3), so the signing key
+  ID is in none of their copies: the copy predates the subkey that
+  signed, or the signer is another key. The line names both and how to
+  refresh a key; aur-curator never fetches or refreshes one. The same
+  text ends the build's error. It is matched on makepkg's English
+  output: in another language makepkg's own message is all there is.
 
 **What a build no longer has.**
 

@@ -51,25 +51,42 @@ func main() {
 		}
 	}
 
-	if showHelp(os.Args[1:]) {
+	inv, err := parseArgs(os.Args[1:])
+	switch {
+	case inv.help == helpShort:
+		fmt.Print(synopsis())
 		os.Exit(0)
+	case inv.help == helpFull:
+		rendered, err := help.Render(80, false)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Print(rendered)
+		os.Exit(0)
+	case inv.version:
+		fmt.Println(version.Version)
+		os.Exit(0)
+	case err != nil:
+		// Before the config is read, so a bad config cannot hide a
+		// mistyped command or flag (#511).
+		printUsageError(os.Stderr, err)
+		os.Exit(2)
 	}
 
-	debugLogFile, traceFile, positional := extractFlags(os.Args[1:])
-
-	if debugLogFile != "" {
-		if f, err := os.OpenFile(debugLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-			debug.Set(f)
+	if inv.debugLog != "" {
+		// Like --trace: a log that cannot be written is said, not skipped (#518).
+		f, err := os.OpenFile(inv.debugLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "debug-log: cannot open %s: %v\n", inv.debugLog, err)
+			os.Exit(1)
 		}
+		debug.Set(f)
 	} else if os.Getenv("AUR_CURATOR_DEBUG") != "" {
 		debug.Set(os.Stderr)
 	}
 
-	if len(positional) < 1 {
-		usage()
-		os.Exit(2)
-	}
-	configPath := positional[0]
+	configPath := inv.configPath
 	// Absolute, so the build sandbox can hide it wherever it is (#496).
 	if abs, err := filepath.Abs(configPath); err == nil {
 		configPath = abs
@@ -83,7 +100,7 @@ func main() {
 
 	// Wire trace sink after config so we can resolve .aur-curator/
 	// inside the workspace directory.
-	tracePath := traceFile
+	tracePath := inv.trace
 	if tracePath == "" && os.Getenv("AUR_CURATOR_TRACE") != "" {
 		tracePath = filepath.Join(cfg.RootPath, traceLogName)
 	}
@@ -100,128 +117,18 @@ func main() {
 	forge := git.NewGiteaForge(cfg.GiteaBaseURL, cfg.GiteaOrg, cfg.GiteaToken.Value(), config.GiteaTokenSource(configPath))
 	provider := git.New(pkgCatalog, git.ExecRunner{}, forge, cfg.RootPath)
 
-	switch {
-	case len(positional) == 1:
+	if inv.cmd == nil {
 		runTUI(cfg, configPath, pkgCatalog, provider)
-	case len(positional) == 3 && positional[1] == "import":
-		runImport(cfg, configPath, pkgCatalog, provider, positional[2])
-	case len(positional) == 3 && positional[1] == "remove":
-		runRemove(cfg, configPath, pkgCatalog, provider, forge, positional[2])
-	case len(positional) == 2 && positional[1] == "check":
-		runCheck(cfg, configPath, pkgCatalog, provider)
-	case len(positional) == 2 && positional[1] == "update":
-		runUpdate(cfg, configPath, pkgCatalog, provider)
-	case len(positional) == 2 && positional[1] == "outdated":
-		runOutdated(cfg, pkgCatalog, provider)
-	default:
-		usage()
-		os.Exit(2)
+		return
 	}
-}
-
-// knownFlags lists flag names recognized by aur-curator.
-var knownFlags = []string{"debug-log", "trace"}
-
-func usage() {
-	name := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr,
-		"usage: %s [flags] <config-file>\n       %s [flags] <config-file> import <package-name>\n       %s [flags] <config-file> remove <package-name>\n       %s [flags] <config-file> check\n       %s [flags] <config-file> update\n       %s [flags] <config-file> outdated\n",
-		name, name, name, name, name, name)
-}
-
-// showHelp checks if --help, -h, --version, or -version appears in args
-// and prints usage or version if so.
-func showHelp(args []string) bool {
-	for _, a := range args {
-		if a == "--help" || a == "-h" {
-			rendered, err := help.Render(80, false)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			fmt.Print(rendered)
-			return true
-		}
-		if a == "--version" || a == "-version" {
-			fmt.Println(version.Version)
-			return true
-		}
-	}
-	return false
-}
-
-// extractFlags scans args for known flags (--name value or --name=value)
-// and returns the debug-log value, trace value, and the remaining positional arguments.
-func extractFlags(args []string) (debugValue string, traceValue string, positional []string) {
-	i := 0
-	for i < len(args) {
-		arg := args[i]
-		isFlag := false
-
-		// Check --name=value form
-		for _, name := range knownFlags {
-			prefix := "--" + name + "="
-			if strings.HasPrefix(arg, prefix) {
-				switch name {
-				case "debug-log":
-					debugValue = strings.TrimPrefix(arg, prefix)
-				case "trace":
-					traceValue = strings.TrimPrefix(arg, prefix)
-				}
-				isFlag = true
-				break
-			}
-			prefix = "-" + name + "="
-			if strings.HasPrefix(arg, prefix) {
-				switch name {
-				case "debug-log":
-					debugValue = strings.TrimPrefix(arg, prefix)
-				case "trace":
-					traceValue = strings.TrimPrefix(arg, prefix)
-				}
-				isFlag = true
-				break
-			}
-		}
-		if isFlag {
-			i++
-			continue
-		}
-
-		// Check --name value form
-		for _, name := range knownFlags {
-			if arg == "--"+name || arg == "-"+name {
-				if i+1 < len(args) {
-					value := args[i+1]
-					switch name {
-					case "debug-log":
-						debugValue = value
-					case "trace":
-						traceValue = value
-					}
-					i += 2
-				} else {
-					// No value provided — flag is present but empty
-					switch name {
-					case "trace":
-						traceValue = ""
-					case "debug-log":
-						debugValue = ""
-					}
-					i++
-				}
-				isFlag = true
-				break
-			}
-		}
-		if isFlag {
-			continue
-		}
-
-		positional = append(positional, arg)
-		i++
-	}
-	return debugValue, traceValue, positional
+	inv.cmd.run(cliEnv{
+		cfg:        cfg,
+		configPath: configPath,
+		catalog:    pkgCatalog,
+		provider:   provider,
+		forge:      forge,
+		arg:        inv.arg,
+	})
 }
 
 // runImport performs a one-shot Import and exits — no TUI. After
@@ -338,7 +245,9 @@ type interruptedBuildRecoverer interface {
 // called with the TUI instance lock held, before the program starts.
 func recoverInterruptedBuilds(cfg domain.WorkspaceConfig, pkgCatalog catalog.PackageCatalog, engine interruptedBuildRecoverer) string {
 	ctx := trace.Start(context.Background(), "recover-interrupted")
-	pkgs, err := pkgCatalog.Packages(ctx)
+	// Rejected names have no builds to recover; the Dashboard reports them
+	// when it loads, in the same start-up (#504).
+	pkgs, _, err := pkgCatalog.Packages(ctx)
 	if err != nil {
 		_ = errorlog.Log(ctx, cfg.RootPath, "recover", fmt.Sprintf("list packages: %v", err))
 		return fmt.Sprintf("Could not check for interrupted builds: %v", err)
@@ -389,6 +298,15 @@ func runRemove(
 		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "remove", name, "status", "failed", "error", err.Error())
 		os.Exit(1)
 	}
+	// parseArgs has already checked the name (#504); this cannot fail for
+	// a name RepositoryPath accepted, but is not assumed.
+	pkgDir, err := paths.PackageDir(pkgName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "remove %q: %v\n", name, err)
+		_ = errorlog.Log(ctx, cfg.RootPath, "remove", fmt.Sprintf("store path: %v", err))
+		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "remove", name, "status", "failed", "error", err.Error())
+		os.Exit(1)
+	}
 	if _, err := os.Stat(repoPath); err != nil {
 		fmt.Fprintf(os.Stderr, "remove %q: package not found at %q\n", name, repoPath)
 		_ = errorlog.Log(ctx, cfg.RootPath, "remove", fmt.Sprintf("package directory not found: %s", repoPath))
@@ -406,7 +324,7 @@ func runRemove(
 
 	fmt.Printf("This will delete:\n")
 	fmt.Printf("  - Package directory: %s\n", repoPath)
-	fmt.Printf("  - Store metadata: %s\n", paths.PackageDir(pkgName))
+	fmt.Printf("  - Store metadata: %s\n", pkgDir)
 	fmt.Printf("  - Build binaries in: %s\n", paths.BuildsDir())
 	fmt.Printf("  - Gitea repository: %s/%s\n", cfg.GiteaOrg, name)
 
@@ -492,7 +410,6 @@ func runRemove(
 		}
 	}
 
-	pkgDir := paths.PackageDir(pkgName)
 	if err := os.RemoveAll(pkgDir); err != nil {
 		_ = errorlog.Log(ctx, cfg.RootPath, "remove", fmt.Sprintf("store metadata delete failed: %v", err))
 		_ = aurlog.Log(ctx, cfg.ActivityLogPath, "remove", name, "store_metadata_delete", "failed", "path", pkgDir, "error", err.Error())
@@ -564,6 +481,7 @@ func runCheck(
 		check1OrphanFixes     int
 		check1MissingRev      int
 		check1Corrupted       int
+		check1InvalidNames    int
 		check2DanglingRefs    int
 		check2OrphanArts      int
 		check2StaleArts       int
@@ -592,13 +510,19 @@ func runCheck(
 	trace.Log(ctx, "check0", "state", "passed")
 
 	// Fetch catalog and build lookup set
-	packages, err := pkgCatalog.Packages(ctx)
+	packages, rejected, err := pkgCatalog.Packages(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check: catalog error: %v\n", err)
 		_ = errorlog.Log(ctx, cfg.RootPath, "check", "catalog.Packages failed: "+err.Error())
 		os.Exit(1)
 	}
 	packagesChecked = len(packages)
+	// A directory in the workspace root whose name is not a package name
+	// (#504): report-only.
+	for _, r := range rejected {
+		check1InvalidNames++
+		findings = append(findings, fmt.Sprintf("workspace directory %q: %v", r.Name, r.Err))
+	}
 
 	catSet := make(map[domain.PackageName]bool, len(packages))
 	for _, pkg := range packages {
@@ -636,7 +560,15 @@ func runCheck(
 			if catSet[pkgName] {
 				continue
 			}
-			dirPath := paths.PackageDir(pkgName)
+			// A store directory whose name is not a package name is
+			// reported, never deleted: it was not written under this
+			// name by aur-curator (#504).
+			dirPath, err := paths.PackageDir(pkgName)
+			if err != nil {
+				check1InvalidNames++
+				findings = append(findings, fmt.Sprintf("store directory %q: %v", entry.Name(), err))
+				continue
+			}
 			if err := os.RemoveAll(dirPath); err != nil {
 				_ = errorlog.Log(ctx, cfg.RootPath, "check", "orphan cleanup failed: "+err.Error())
 				_ = aurlog.Log(ctx, cfg.ActivityLogPath, "check", string(pkgName), "check1", "orphan_cleanup", "status", "failed", "error", err.Error())
@@ -812,6 +744,7 @@ func runCheck(
 	fmt.Printf("Check 1 — orphaned store records auto-fixed: %d\n", check1OrphanFixes)
 	fmt.Printf("Check 1 — missing reviews (report-only): %d\n", check1MissingRev)
 	fmt.Printf("Check 1 — corrupted records (report-only): %d\n", check1Corrupted)
+	fmt.Printf("Check 1 — invalid package names (report-only): %d\n", check1InvalidNames)
 	fmt.Printf("Check 2 — dangling artifact refs auto-fixed: %d\n", check2DanglingRefs)
 	fmt.Printf("Check 2 — orphaned artifacts auto-fixed: %d\n", check2OrphanArts)
 	fmt.Printf("Check 2 — stale artifacts auto-fixed: %d\n", check2StaleArts)
@@ -856,14 +789,19 @@ func runUpdate(
 	ctx := trace.Start(context.Background(), "update")
 
 	// Step 1: Fetch catalog.
-	packages, err := pkgCatalog.Packages(ctx)
+	packages, rejected, err := pkgCatalog.Packages(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "update: catalog error: %v\n", err)
 		_ = errorlog.Log(ctx, cfg.RootPath, "update", "catalog.Packages failed: "+err.Error())
 		os.Exit(1)
 	}
+	// A directory whose name is not a package name is not checked (#504).
+	notPackages := rejectedReasons(rejected)
 
 	if len(packages) == 0 {
+		for _, r := range notPackages {
+			fmt.Printf("Not checked: %s: %s.\n", r.pkg, r.reason)
+		}
 		fmt.Println("No curated packages found.")
 		os.Exit(0)
 	}
@@ -883,6 +821,7 @@ func runUpdate(
 
 	plan := planUpdate(check.Pairs, d.ReviewDB.Get, mergedCheck(ctx, provider))
 	summary := newUpdateSummary(len(packages), plan)
+	summary.notChecked = append(summary.notChecked, notPackages...)
 
 	// Step 3: Pending reviews the AUR has not moved past.
 	for _, pkg := range plan.pendingUpToDate {
@@ -953,10 +892,15 @@ func runOutdated(
 	defer func() { _ = release() }()
 	ctx := trace.Start(context.Background(), "outdated")
 
-	packages, err := pkgCatalog.Packages(ctx)
+	packages, rejected, err := pkgCatalog.Packages(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "outdated: catalog error: %v\n", err)
 		os.Exit(exitOutdatedFailed)
+	}
+	// Named on stderr, like a package that cannot be compared is left
+	// out; the exit status is the AUR check's (#504).
+	for _, r := range rejected {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", r.Name, r.Err)
 	}
 	if len(packages) == 0 {
 		os.Exit(exitOutdatedOK)

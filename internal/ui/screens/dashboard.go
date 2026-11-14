@@ -31,7 +31,8 @@ import (
 // Skipped contains packages that were discovered but excluded from display
 // because their remotes could not be read: git failed on the clone, or an
 // origin or upstream remote is missing (i.e., they were not added through
-// the Import flow). Each skipped package has already had its reason
+// the Import flow); or because the directory's name is not a valid
+// package name (#504). Each skipped package has already had its reason
 // written to the persistent error log.
 //
 // Err ends the load: the catalog could not be read, git could not be
@@ -345,12 +346,19 @@ func (m DashboardModel) loadPackagesCmd(ctx context.Context) tea.Cmd {
 			_ = errorlog.Logf(ctx, m.deps.Config.RootPath, "catalog", "package list not loaded: %v", err)
 			return PackagesLoadedMsg{Err: err, TraceCtx: ctx}
 		}
-		pkgs, err := catalog.Packages(ctx)
+		pkgs, rejected, err := catalog.Packages(ctx)
 		if err != nil {
 			return failed(err)
 		}
 		var skipped []domain.PackageName
 		var valid []domain.PackageName
+		// A directory whose name is not a package name is left out like a
+		// package with bad remotes, and named the same way (#504, #513).
+		for _, r := range rejected {
+			skipped = append(skipped, domain.PackageName(r.Name))
+			trace.Log(ctx, "loadPackagesCmd", "pkg", r.Name, "validated", "no", "reason", "invalid-name")
+			_ = errorlog.Logf(ctx, m.deps.Config.RootPath, "catalog", "skipped %q: %v", r.Name, r.Err)
+		}
 		for _, pkg := range pkgs {
 			meta, metaErr := m.deps.Git.Metadata(ctx, pkg)
 			// Git not starting, or the load's context ending, would fail

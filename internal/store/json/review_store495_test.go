@@ -18,7 +18,7 @@ func TestReviewStoreReadsReviewWithoutAURFields(t *testing.T) {
 	t.Parallel()
 
 	paths := store.NewStorePaths(t.TempDir())
-	dir := paths.PackageDir("yay")
+	dir := mustPath(paths.PackageDir("yay"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

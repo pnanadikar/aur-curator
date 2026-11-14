@@ -18,6 +18,9 @@ import (
 // to upstream advancing after the merge, unlike CommitsBehind which
 // only answers "how far behind is master from upstream's current tip."
 //
+// reviewedCommit must be a full commit hash; anything else is an error,
+// and git is not run (#504).
+//
 // Only git's own "not an ancestor" answer (exit code 1) is (false, nil).
 // Any other failure — the repository path cannot be resolved, the commit
 // or master is missing, git times out — is (false, err): the merge state
@@ -27,6 +30,10 @@ func (p *provider) IsMerged(ctx context.Context, packageName domain.PackageName,
 	repo, err := p.repoPath(ctx, packageName)
 	if err != nil {
 		return false, fmt.Errorf("resolve repository %q: %w", packageName, err)
+	}
+
+	if err := checkFullHash(reviewedCommit); err != nil {
+		return false, fmt.Errorf("merge check %q: %w", packageName, err)
 	}
 
 	// `git merge-base --is-ancestor A B` exits 0 if A is an ancestor of

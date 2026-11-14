@@ -1449,7 +1449,7 @@ func TestEngineSavesLastSuccessOnSuccess(t *testing.T) {
 	}
 
 	// Verify the file actually exists on disk (not just satisfied by fallback).
-	lsPath := paths.LastSuccessBuildPath("testpkg")
+	lsPath := mustPath(paths.LastSuccessBuildPath("testpkg"))
 	if _, err := os.Stat(lsPath); err != nil {
 		t.Fatalf("last-success file %s should exist: %v", lsPath, err)
 	}
@@ -1624,7 +1624,7 @@ func TestEngineLastSuccessPersistedThenCancel(t *testing.T) {
 	if ls.ID != build1.ID {
 		t.Fatalf("last-success ID = %q, want %q", ls.ID, build1.ID)
 	}
-	if _, err := os.Stat(paths.LastSuccessBuildPath("cancelpkg")); err != nil {
+	if _, err := os.Stat(mustPath(paths.LastSuccessBuildPath("cancelpkg"))); err != nil {
 		t.Fatalf("last-success.json missing after cancel: %v", err)
 	}
 }

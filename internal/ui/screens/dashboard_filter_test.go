@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pramod/aur-curator/internal/build"
+	"github.com/pramod/aur-curator/internal/catalog"
 	"github.com/pramod/aur-curator/internal/deps"
 	"github.com/pramod/aur-curator/internal/domain"
 	"github.com/pramod/aur-curator/internal/git"
@@ -668,13 +669,14 @@ func TestPackagesLoadedMsg_FiresAURCheckInBatch(t *testing.T) {
 	cmd()
 }
 
-// mockCatalog returns a fixed set of packages.
+// mockCatalog returns a fixed set of packages, and of rejected names.
 type mockCatalog struct {
-	pkgs []domain.PackageName
+	pkgs     []domain.PackageName
+	rejected []catalog.Rejected
 }
 
-func (m *mockCatalog) Packages(_ context.Context) ([]domain.PackageName, error) {
-	return m.pkgs, nil
+func (m *mockCatalog) Packages(_ context.Context) ([]domain.PackageName, []catalog.Rejected, error) {
+	return m.pkgs, m.rejected, nil
 }
 
 func (m *mockCatalog) RepositoryPath(name domain.PackageName) (string, error) {

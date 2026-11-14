@@ -41,9 +41,9 @@ func TestStoreFilesArePrivate(t *testing.T) {
 	}
 
 	for _, p := range []string{
-		paths.ReviewPath("yay"),
-		paths.BuildPath("yay"),
-		paths.LastSuccessBuildPath("yay"),
+		mustPath(paths.ReviewPath("yay")),
+		mustPath(paths.BuildPath("yay")),
+		mustPath(paths.LastSuccessBuildPath("yay")),
 		paths.ArtifactPath("a1"),
 	} {
 		wantMode(t, p, 0o600)

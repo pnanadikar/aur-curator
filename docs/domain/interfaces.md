@@ -86,6 +86,12 @@ Provide repository information and perform Git operations.
 - perform merges
 - expose repository metadata
 
+A commit given to the provider is never passed to git unchecked:
+`Diff`, `ReviewDiff` and `Merge` resolve theirs with `git rev-parse
+--verify`; `IsMerged` and `FileAtCommit`, which take a stored commit,
+accept only a full hash (40 or 64 lowercase hex digits) and otherwise
+fail without running git (#504).
+
 #### Owns
 
 Repository state.
@@ -113,10 +119,15 @@ performs a live scan (§ Design Note: No Cache).
   direct subdirectory of the workspace root whose name does not start
   with `.` (so `.aur-curator/` and similar are never packages). Files are
   ignored. Names are returned in directory order (sorted by name); an
-  empty workspace yields an empty result, not an error.
+  empty workspace yields an empty result, not an error. A directory whose
+  name breaks the package-name rule (`domain.md` § Package → Name) is not
+  listed: it is returned separately as *rejected*, with the reason, and
+  every caller reports it (#504) — the Dashboard as a skipped package
+  (error log and status-bar warning), `check` as a finding, `update` as
+  not checked, `outdated` on stderr.
 - **`RepositoryPath(name)`** — resolve a package's local repository path
   (`<rootPath>/<name>`). Pure path computation: no I/O, and the directory
-  need not exist.
+  need not exist. A name that breaks the rule is an error.
 
 There are deliberately no other methods — no `Refresh` (every call is
 already live, so there is nothing to refresh) and no `Register`,

@@ -120,7 +120,7 @@ func TestRecoverInterruptedLeavesFinishedBuildsAlone(t *testing.T) {
 	f.save(t, "bad", &domain.Build{ID: "f1", PackageName: "bad", Status: domain.BuildFailed, EndTime: &end, LastFailureBuildID: "f1"})
 	before := map[string][]byte{}
 	for _, pkg := range []domain.PackageName{"ok", "bad"} {
-		data, err := os.ReadFile(f.paths.BuildPath(pkg))
+		data, err := os.ReadFile(mustPath(f.paths.BuildPath(pkg)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +136,7 @@ func TestRecoverInterruptedLeavesFinishedBuildsAlone(t *testing.T) {
 		t.Fatalf("recovered = %v, want none", recovered)
 	}
 	for pkg, data := range before {
-		after, err := os.ReadFile(f.paths.BuildPath(domain.PackageName(pkg)))
+		after, err := os.ReadFile(mustPath(f.paths.BuildPath(domain.PackageName(pkg))))
 		if err != nil {
 			t.Fatal(err)
 		}
