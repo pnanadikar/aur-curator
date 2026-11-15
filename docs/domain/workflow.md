@@ -206,7 +206,7 @@ is the most recent successful build; "HEAD" is local `master` HEAD.
 | T8 | Rejected | (none but Fetch) | — | — | — | — [6] |
 | T9 | Approved | Merge | — | Fast-forward local `master` to the reviewed commit, push to `origin` | Merged | Approved — merge failed, reported [7] |
 | T10 | Merged | Build | — | Build HEAD | Built (new last success, unconfirmed) | Merged [8] |
-| T11 | Built | Confirm | Last success = build of HEAD | Mark last success Confirmed | Confirmed | Built; refused if guard fails [9] |
+| T11 | Built | Confirm | Last success = build of HEAD | Confirm modal (§ Confirm Confirmation), then mark last success Confirmed | Confirmed | Built; refused if guard fails [9] |
 | T12 | Confirmed | Publish | Last success = build of HEAD | Copy artifacts to the package repository, `repo-add`, mark last success Published | Published | Confirmed, repository directory restored [14]; refused if guard fails [9] |
 | T15 | Built, Confirmed, Published | Build (rebuild) | Last success = build of HEAD | Rebuild prompt, then build HEAD | Built (new last success, unconfirmed) | Same state [11] |
 | T16 | Any | Cancel (`^T`) | An operation is running | Abort the running operation | Same state | — [12] |
@@ -226,7 +226,7 @@ Notes:
 6. The only way out of Rejected is a Fetch bringing a newer upstream commit (T2). A previously published version stays in the local package repository and remains installable with plain pacman (§ Installation). A rejected change can be fixed locally only outside the app (§ Local Commits Not on Upstream).
 7. Fast-forward only (§ Merge), to the reviewed commit. Local commits not on upstream make the fast-forward impossible.
 8. A failed or cancelled build leaves the state unchanged. A failure is shown through the latest attempt's status (build status column, Failed card); a cancelled build is not recorded at all (`domain.md` § Build → Cancellation). Build goes through the Build confirmation flow (§ Build Confirmation), identically on the Dashboard and Package Details.
-9. Confirm and Publish act only on the last success whose commit equals HEAD. If it does not match — e.g. a merge moved HEAD — the operation refuses with a clear message, records nothing, and logs the refusal. The UI also disables these actions, but the guard is enforced in the operation itself, not only in the UI.
+9. Confirm and Publish act only on the last success whose commit equals HEAD. If it does not match — e.g. a merge moved HEAD — the operation refuses with a clear message, records nothing, and logs the refusal. The UI also disables these actions, but the guard is enforced in the operation itself, not only in the UI. Confirm also refuses when the last success is no longer the build shown in its modal (#525).
 10. (Removed with Install, #351.)
 11. The previous last success is untouched until the rebuild succeeds, so a running or failed rebuild never demotes the package; its published artifact stays in the package repository until a new one is published. A successful rebuild always needs a fresh Confirm. See § Rebuild Confirmation.
 12. A cancelled build is not recorded (#304); every other cancelled operation leaves no state change.
@@ -318,6 +318,30 @@ was built. When `Build` is pressed and the last success is the build of HEAD:
 
 Until the rebuild succeeds, the previous last success stays in effect: a
 running or failed rebuild leaves the state unchanged.
+
+### Confirm Confirmation
+
+Pressing Confirm (T11) on the Dashboard or on Package Details runs the
+same flow, from one shared implementation (#525). aur-curator first
+inspects every artifact of the last success (`domain.md` § Build →
+Confirmed), showing `Inspecting <package>…`, then opens a modal:
+
+- per artifact: its file name and sha256, then each category found with
+  its count, and up to 8 paths in all, in category order, then `… and N
+  more`; or, after a blank line, `Nothing with special power.`;
+- `Has an install script (.INSTALL): v to read it.`, when one has it;
+- `Full list: a to go to the Artifacts tab.`, unless Confirm was pressed
+  on the Artifacts tab, which already shows it (then `a` does nothing).
+
+Keys: `y` confirms (T11); `n` or Esc ends the flow with nothing
+recorded; `a` ends it the same way and opens Package Details on the
+Artifacts tab; `v` opens the install script in the pager (as Review's
+`v`, escapes visible, #491) and returns to the modal. An artifact that
+could not be inspected is shown with its error; `y` stays available,
+since the inspection is information, not a gate.
+
+The modal names the build it inspected; Confirm refuses if the last
+success has changed since (note 9).
 
 This is integrity verification of the existing artifact, not a
 reproducibility check — Linux builds (`makepkg` in particular) are not

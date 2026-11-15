@@ -71,7 +71,7 @@ A package can attack at three points, and each needs its own defense:
 
 The review gate defends against the first only. A v1 build ran with
 everything the user has; from v1.4 the build sandbox (P5) defends
-against the second, and from v2 the build has no network after its
+against the second, and from v1.6 the build has no network after its
 sources are downloaded (P6, #522).
 
 ### `-bin` packages
@@ -166,11 +166,11 @@ column says what the sandbox takes away.
 | B1 | Credential theft | `~/.ssh`, browser profiles, password-store files, the aur-curator config (`giteaToken`), and the inherited environment, including `AUR_CURATOR_GITEA_TOKEN` when set (the config example recommends it). Also the SSH and GPG agent sockets | v1.4 (P5): the build sees only `/usr`, `/etc`, `/opt`, `/sys` and `/var/lib/pacman` from the host, so `$HOME` (an empty tmpfs inside), other disks and the config file are absent; `/run` (every agent and bus socket) is an empty tmpfs; the environment is an allowlist; the build gets a fresh, empty session keyring. Before that, P1 removed secrets held in the environment (#473) |
 | B2 | Persistence on the host | shell startup files, `systemd --user` units, autostart entries, `crontab` | v1.4 (P5): nothing outside the build's workspace is writable, `$HOME` is a tmpfs discarded with the build, the user's systemd and the session bus are behind the hidden `/run`, and `crontab` is setuid, which `no_new_privs` defeats |
 | B3 | Poisoning other curated packages | the whole `rootPath`, including other packages' clones and the `.aur-curator/` stores (review and build records), and `repositoryPath`, the repository pacman installs from. A build that writes a package into `repositoryPath` and updates its database gets it installed as root on the next `pacman -Syu`. Commits added to another package's clone are caught (S8); changes to the stores and to the repository are not | v1.4 (P5): only the build's workspace is writable; the rest of `rootPath` and all of `repositoryPath` are absent |
-| B4 | Exfiltration | the network, for the whole build | v2 (P6, #522): the network only while makepkg downloads and verifies the sources; none for `prepare()`, `pkgver()`, `build()`, `check()` and `package()`. Gaps: the PKGBUILD's top-level code runs during the download too, with the network; a package listed in `buildNetwork` has the network for the whole build (§ The network) |
-| B5 | Other processes of the user | signals and `ptrace` on same-user processes; the session D-Bus (including a secret service); the display server | partial, v1.4 (P5): separate user, PID, IPC, UTS and cgroup namespaces, so no other process is visible to signal or trace; `/run` and `/tmp` are empty tmpfs mounts, so no session bus, agent or X11 path socket is reachable. Abstract Unix sockets (`@` names, such as an X server's `@/tmp/.X11-unix/X0`) belong to the network namespace: from v2 (P6, #522) the build phase has its own, so none is reachable, and the self-test fails if one is. Gap: the download phase, and every phase of a package in `buildNetwork`, share the host's network namespace; the build log lists the abstract sockets those runs can see. Reaching one is not using it: an X server or session manager that needs a cookie refuses the build, because the cookies (`~/.Xauthority`, `~/.ICEauthority`, `/run/user/<uid>/xauth_*`) are hidden; one that admits the user by identity (`xhost` lists `SI:localuser:<user>`) accepts it |
+| B4 | Exfiltration | the network, for the whole build | v1.6 (P6, #522): the network only while makepkg downloads and verifies the sources; none for `prepare()`, `pkgver()`, `build()`, `check()` and `package()`. Gaps: the PKGBUILD's top-level code runs during the download too, with the network; a package listed in `buildNetwork` has the network for the whole build (§ The network) |
+| B5 | Other processes of the user | signals and `ptrace` on same-user processes; the session D-Bus (including a secret service); the display server | partial, v1.4 (P5): separate user, PID, IPC, UTS and cgroup namespaces, so no other process is visible to signal or trace; `/run` and `/tmp` are empty tmpfs mounts, so no session bus, agent or X11 path socket is reachable. Abstract Unix sockets (`@` names, such as an X server's `@/tmp/.X11-unix/X0`) belong to the network namespace: from v1.6 (P6, #522) the build phase has its own, so none is reachable, and the self-test fails if one is. Gap: the download phase, and every phase of a package in `buildNetwork`, share the host's network namespace; the build log lists the abstract sockets those runs can see. Reaching one is not using it: an X server or session manager that needs a cookie refuses the build, because the cookies (`~/.Xauthority`, `~/.ICEauthority`, `/run/user/<uid>/xauth_*`) are hidden; one that admits the user by identity (`xhost` lists `SI:localuser:<user>`) accepts it |
 | B6 | Privilege escalation | `sudo -n` succeeds if a sudo timestamp is still valid for the terminal aur-curator runs in; setuid binaries on the host | v1.4 (P5): `no_new_privs`, so setuid binaries (`sudo` among them) gain nothing; sudo's timestamps under `/run/sudo` are hidden; no nested user namespaces |
 | B7 | Resource exhaustion | CPU, memory, disk | partial: a build can be cancelled (X), which ends its whole process group; no limits (§ Later) |
-| B8 | Artifacts that differ from what the source says | The build decides what goes into the package | partial: Confirm is a human gate with no verification; planned: P7 |
+| B8 | Artifacts that differ from what the source says | The build decides what goes into the package | partial: from v1.7 Confirm lists what each artifact installs with special power, read from the archive (P7, #525); nothing compares the archive with the PKGBUILD |
 
 B3 is the most serious: it turns one hostile build into a root
 installation of something nobody reviewed, and it bypasses the review
@@ -206,11 +206,15 @@ for and what they leave open.
   checks from inside the sandbox that no Unix socket accepts a
   connection, the keyrings are empty, `no_new_privs` is set, a user
   namespace cannot be created, the environment is exactly the
-  allowlist, the hidden paths are hidden, and (from v2, unless the
+  allowlist, the hidden paths are hidden, and (from v1.6, unless the
   package is in `buildNetwork`) there is no network interface but `lo`
   and no abstract socket; and from the host that
   writes into `rootPath` and `repositoryPath` did not land. A failure
   fails the build: there is no unsandboxed fallback.
+- **Reading built packages.** The Confirm inspector (P7, #525) runs
+  `bsdtar` on the artifact in the same sandbox, the build directory
+  read-only and no network: the archive is untrusted input to a C
+  parser.
 - **Not covered:** the network while sources are downloaded, and for a
   package in `buildNetwork` (B4, B5, § The network), system calls (no seccomp filter yet), resource limits (B7), and
   anything that escapes bubblewrap or the kernel (§ Scope). The build
@@ -226,7 +230,7 @@ for and what they leave open.
 ### The network
 
 A build needs the network to download its sources; most need nothing
-after that. From v2 (P6, #522) a build is two makepkg runs in the
+after that. From v1.6 (P6, #522) a build is two makepkg runs in the
 sandbox, the same but for the network:
 
 1. **Download,** with the network: `makepkg --verifysource` downloads
@@ -268,7 +272,7 @@ clients is reachable.
 | # | Threat | Defense | Status |
 | --- | --- | --- | --- |
 | I1 | `.install` scriptlets run as root | The Shell analyzer scans every added line of `.install`, not only function bodies; review | v1; P4 flags a `.install` added or changed (`install_changed`, #476) |
-| I2 | Files placed with special power: setuid binaries, pacman hooks, systemd units, files under `/etc`, `sudoers.d`, sysusers, udev rules | Confirm, a human gate with no verification (`domain.md` § Package) | planned: P7 (list them at Confirm; informational, never blocking) |
+| I2 | Files placed with special power: setuid binaries, pacman hooks, systemd units, files under `/etc`, `sudoers.d`, sysusers, tmpfiles, udev and polkit rules, files not owned by root | Confirm lists them from the archive itself, per artifact, before the user confirms (`domain.md` § Confirmed, `workflow.md` § Confirm Confirmation) | v1.7 (P7, #525): informational, never blocking; whether the PKGBUILD meant to install them is still the user's judgement |
 | I3 | The installed program itself, run by the user | Out of aur-curator's reach: trust in the upstream project or vendor, established at review (S2, S5) | accepted |
 | I4 | Something other than a published build is in the local repository | Only Publish writes `repositoryPath`, by design; nothing stops another writer (B3). The repository is not signed, and its `pacman.conf` entry uses `SigLevel = Optional TrustAll`, so pacman installs an unsigned package from it without a prompt | v1.4 (P5) closes the build route; repository signing matters once more than one machine uses the repository (§ Later) |
 
@@ -285,8 +289,8 @@ format, so each can ship as a v1.x minor release.
 | P3 | **No silent Low.** A test that every category an analyzer emits is in the severity table; an unmapped category resolves to High, is written to the error log and is reported to the user as an internal inconsistency (#475) | small | `risk-analysis.md` § Unmapped categories |
 | P4 | **Signals from the existing PKGBUILD parser,** each Medium: `.install` added or changed; a key added to `validpgpkeys`, with or without one removed; an entry added to `depends`, `makedepends`, `checkdepends` or `optdepends`. Medium becomes reachable (#23) (#476) | small–medium | S1, S5, S7, I1, in part |
 | P5 | **Sandboxed build** (bwrap, #496, v1.4): an empty root with only `/usr`, `/etc`, `/opt`, `/sys` and `/var/lib/pacman` added read-only, so everything else (`/home`, `/mnt`, `/srv`, `/var/log`, `rootPath`, `repositoryPath`, any other mount) is absent; only the build's workspace writable; `$HOME`, `/run`, `/tmp` and `/var/tmp` on empty tmpfs mounts; the config file and activity log hidden; a keybox of the PKGBUILD's `validpgpkeys` read-only; an allowlisted environment; a fresh session keyring; separate namespaces; `no_new_privs`; no nested user namespaces. A self-test before every build and as `check` 4. If the sandbox cannot be set up or the self-test fails, the build fails; there is no unsandboxed fallback. Adversarial fixture builds that try to read a dummy secret, write `rootPath` and `repositoryPath`, read the token, run `sudo -n`, connect to a socket, read the session keyring and create a user namespace, each expected to fail (§ The Sandbox) | medium–high | B1, B2, B3, B6; B5 but abstract sockets |
-| P6 | **Network for fetching only** (#522, v2): the download with the network, the build without; `buildNetwork` for a package that needs it throughout (§ The network). A package that needed the network now fails until it is listed, so it ships in v2 | medium | B4; B5's abstract sockets |
-| P7 | **Confirm inspector.** Read the built archive without extracting it; list setuid and setgid files, `.INSTALL`, pacman hooks, systemd units, files under `/etc`, `sudoers.d`, sysusers and udev rules, and the archive's sha256. Informational, never blocking. Changes the domain rule "Confirm performs no verification": an ADR first | medium | I2, B8 |
+| P6 | **Network for fetching only** (#522, v1.6.0): the download with the network, the build without; `buildNetwork` for a package that needs it throughout (§ The network). A package that needed the network fails until it is listed; shipped as a minor release with a "before upgrading" note | medium | B4; B5's abstract sockets |
+| P7 | **Confirm inspector** (#525, v1.7): read each artifact without extracting it, in the sandbox; list setuid and setgid files, `.INSTALL`, pacman hooks, systemd units, sudoers, sysusers and tmpfiles, udev and polkit rules, other files under `/etc`, entries not owned by root and unusual entries, with the archive's sha256, on the Artifacts tab and in a modal at Confirm. Informational, never blocking; nothing stored | medium | I2, B8 |
 
 P1–P4 are independent of each other. P5's ADR is #496 and its plan
 `docs/plans/496-sandboxed-builds.md`; P6 builds on P5, its plan

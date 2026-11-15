@@ -98,6 +98,34 @@ character (`\u202e`, `\u200b`, …) in the diff, a finding or a commit is
 shown as a red escape, not passed to the terminal: such characters can
 hide a line or show text over it. Treat one in a PKGBUILD as suspect.
 
+## Confirm
+
+Confirm (`c`) first reads the built package and shows what it installs
+with special power, for each package file, with its sha256. Nothing is
+checked against the PKGBUILD and nothing is blocked: you decide.
+
+| Shown | Entries |
+| --- | --- |
+| setuid / setgid | files that run with their owner's rights |
+| not owned by root | anything whose owner or group is not root |
+| install script | `.INSTALL`, run by pacman as root |
+| pacman hook | pacman's hooks directories |
+| systemd unit | systemd's unit directories |
+| sudoers | `/etc/sudoers`, `/etc/sudoers.d` |
+| sysusers / tmpfiles | `sysusers.d`, `tmpfiles.d` |
+| udev rule | udev's rules directories |
+| polkit rule | polkit's rules directories |
+| under /etc | any other file under `/etc` |
+| unusual entry | devices, FIFOs, sockets, odd paths |
+
+Keys in the Confirm window:
+
+- `y`: confirm; `n` or `Esc`: cancel
+- `a`: cancel and open the full list (Package Details, Artifacts tab)
+- `v`: read the install script in your pager
+
+The Artifacts tab shows the same list in full.
+
 ## Usage
 
 ```

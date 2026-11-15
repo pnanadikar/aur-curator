@@ -24,6 +24,9 @@ type NavigateMsg struct {
 	To       Screen
 	Package  domain.PackageName // set when navigating to ScreenPackageDetail or ScreenReview
 	FromMenu bool               // true when triggered by a Nav Menu digit key; clears history entirely
+	// ShowArtifacts opens Package Details on its Artifacts tab (the
+	// Confirm modal's `a`, #525).
+	ShowArtifacts bool
 }
 
 // BackMsg pops the top of the navigation stack, returning to the
@@ -66,7 +69,11 @@ type BuildRequestedMsg struct {
 
 // ConfirmRequestedMsg requests a package build confirmation.
 type ConfirmRequestedMsg struct {
-	Pkg      domain.PackageName
+	Pkg domain.PackageName
+	// BuildID is the build the Confirm modal showed; Confirm refuses if
+	// the last success is another by then (#525). Empty when the modal
+	// could not read the build.
+	BuildID  domain.BuildID
 	TraceCtx context.Context
 }
 

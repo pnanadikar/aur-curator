@@ -236,6 +236,28 @@ a1b2c3d4 · 6 Nov 2026 20:13
      Size: 4.1 MB
 ```
 
+Under each artifact, what it installs with special power (`domain.md`
+§ Build → Confirmed, #525), read from the archive when the tab loads:
+
+```text
+  1. example-bin-2.1.0-1-x86_64.pkg.tar.zst (x86_64) 2.1.0-1
+     Checksum: 3b6e…
+     Size: 52.0 MB
+     setuid / setgid (1)
+       -rwsr-xr-x root root  opt/example/example-sandbox
+     systemd unit (1)
+       usr/lib/systemd/system/example.service
+     under /etc (1)
+       etc/example.conf
+```
+
+Category headings are highlighted (bold amber), so findings stand out
+from the artifact's other lines; the Confirm modal shows them the same
+way. `Nothing with special power.` (dimmed) when no entry falls in a
+category; `⚠
+cannot inspect: <error>` when the archive cannot be read (also written
+to the error log; the other artifacts are still shown).
+
 Older builds' artifacts are not kept: a new successful build deletes the
 previous one's records and files (#130, #352). Otherwise one of these lines:
 
@@ -296,7 +318,9 @@ run from the Review screen. There is no Install: installation is done with
 pacman (`workflow.md` § Installation, #351).
 
 Build always goes through the Build confirmation flow (`workflow.md`
-§ Build Confirmation), shown as a modal over the screen.
+§ Build Confirmation), shown as a modal over the screen. Confirm always
+goes through the Confirm modal (`workflow.md` § Confirm Confirmation,
+#525); its `a` switches to the Artifacts tab.
 
 With `?` pressed, the full help replaces the compact bar (state: Merged).
 After the actions it lists the scroll keys (§ Interaction, #471), which

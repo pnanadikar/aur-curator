@@ -32,6 +32,14 @@ func ErrorStyle() lipgloss.Style {
 		Bold(true)
 }
 
+// CautionStyle marks something worth a look that is not an error: the
+// Confirm inspector's category headings (#525).
+func CautionStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214")).
+		Bold(true)
+}
+
 func ActiveTabStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Bold(true).

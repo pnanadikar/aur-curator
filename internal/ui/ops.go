@@ -75,6 +75,9 @@ type Operation struct {
 	// ReviewID is the review an Analyze operation acts on; empty for
 	// other kinds (#399).
 	ReviewID domain.ReviewID
+	// BuildID is the build a Confirm operation acts on: the one its modal
+	// showed (#525). Empty for other kinds.
+	BuildID  domain.BuildID
 	TraceCtx context.Context
 	Cancel   context.CancelFunc
 }

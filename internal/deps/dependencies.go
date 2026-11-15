@@ -42,6 +42,9 @@ type Dependencies struct {
 	// SandboxPaths are what the build sandbox is made from; check 4
 	// self-tests the sandbox with them (#496).
 	SandboxPaths build.SandboxPaths
+	// Inspector reads what an artifact installs with special power, for
+	// the Artifacts tab and Confirm (#525).
+	Inspector build.Inspector
 }
 
 // NewDependencies constructs all injected services required by the
@@ -103,6 +106,7 @@ func NewDependencies(
 		AUR:         aurClient,
 
 		SandboxPaths: sandboxPaths,
+		Inspector:    build.ArchiveInspector{Paths: sandboxPaths},
 	}
 }
 

@@ -160,6 +160,9 @@ type DashboardModel struct {
 	// gate runs the Build confirmation flow (workflow.md § Build
 	// Confirmation), shared with Package Details (#320).
 	gate BuildGate
+	// confirmGate runs the Confirm flow (workflow.md § Confirm
+	// Confirmation, #525).
+	confirmGate ConfirmGate
 
 	summary    map[CardID]widgets.Card
 	cards      []widgets.SummaryCard
@@ -244,6 +247,7 @@ func NewDashboardModel(d deps.Dependencies) (m DashboardModel) {
 		cardID:       CardPackages,
 		keys:         newDashboardKeys(),
 		gate:         NewBuildGate(d),
+		confirmGate:  NewConfirmGate(d),
 		updates:      make(map[domain.PackageName]int),
 		reviewInputs: make(map[domain.PackageName]reviewInputs),
 		reviewsByPkg: make(map[domain.PackageName]*domain.Review),
@@ -418,12 +422,26 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 	if handled {
 		return m, gateCmd
 	}
+	cgate, cgateCmd, chandled := m.confirmGate.Update(msg)
+	m.confirmGate = cgate
+	if pkg, wanted := m.confirmGate.ArtifactsWanted(); wanted {
+		// `a` in the Confirm modal: Package Details on the Artifacts tab
+		// (#525).
+		m.confirmGate = m.confirmGate.Reset()
+		return m, tea.Batch(cgateCmd, func() tea.Msg {
+			return msgs.NavigateMsg{To: msgs.ScreenPackageDetail, Package: pkg, ShowArtifacts: true}
+		})
+	}
+	if chandled {
+		return m, cgateCmd
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.toolbar.SetWidth(msg.Width)
 		m.width = msg.Width
 		m.gate.SetWidth(msg.Width)
+		m.confirmGate.SetWidth(msg.Width)
 		m.lastHeight = msg.Height
 		if m.allData {
 			m.pkgList.SetPageSize(m.listPageSize(msg.Height))
@@ -695,11 +713,9 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			if len(entries) > 0 && m.pkgList.Cursor() < len(entries) {
 				pkg := entries[m.pkgList.Cursor()].Name
 				if m.isConfirmEnabled(pkg) {
-					ctx := trace.Start(context.Background(), "confirm")
-					trace.Log(ctx, "key", "action", "fired", "op", "confirm", "pkg", pkg)
-					return m, func() tea.Msg {
-						return msgs.ConfirmRequestedMsg{Pkg: pkg, TraceCtx: ctx}
-					}
+					var cmd tea.Cmd
+					m.confirmGate, cmd = m.confirmGate.Start(pkg, false)
+					return m, cmd
 				}
 			}
 		}
@@ -909,6 +925,9 @@ func (m DashboardModel) View() string {
 	body := b.String()
 	if m.gate.ModalOpen() {
 		return overlay.Render(body, m.gate.View(), lipgloss.Width(body), lipgloss.Height(body))
+	}
+	if m.confirmGate.ModalOpen() {
+		return overlay.Render(body, m.confirmGate.View(), lipgloss.Width(body), lipgloss.Height(body))
 	}
 	return body
 }

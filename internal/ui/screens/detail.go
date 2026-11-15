@@ -182,6 +182,9 @@ type artifactLoadedMsg struct {
 	// buildErr then says why.
 	build    *domain.Build
 	buildErr error
+	// inspections are the artifacts' inspections, in the same order,
+	// read in the same load (#525). nil without an Inspector.
+	inspections []artifactInspection
 }
 
 // opFailure records a post-load operation failure that must be surfaced
@@ -249,15 +252,23 @@ type PackageDetailModel struct {
 	// and buildErr (#507).
 	artifactBuild    *domain.Build
 	artifactBuildErr error
-	contentPane      widgets.ContentPane
-	tabs             widgets.TabBar
-	keys             keyMap
+	// artifactInspections are artifactLoadedMsg's inspections (#525).
+	artifactInspections []artifactInspection
+	contentPane         widgets.ContentPane
+	tabs                widgets.TabBar
+	keys                keyMap
 
 	changed bool
 
 	// gate runs the Build confirmation flow (workflow.md § Build
 	// Confirmation), shared with the Dashboard.
 	gate BuildGate
+	// confirmGate runs the Confirm flow (workflow.md § Confirm
+	// Confirmation, #525).
+	confirmGate ConfirmGate
+	// showArtifacts opens the Artifacts tab once the package has loaded
+	// (PackageSelectedMsg.ShowArtifacts, #525).
+	showArtifacts bool
 
 	// warnings are the rows rendered under the stats row — see
 	// detailLoadedMsg.
@@ -273,6 +284,7 @@ func NewPackageDetailModel(deps deps.Dependencies) PackageDetailModel {
 		tabs:        widgets.NewTabBar([]widgets.Tab{{Label: "Summary", Enabled: true}, {Label: "Commits", Enabled: true}, {Label: "Build Log", Enabled: true}, {Label: "Artifacts", Enabled: true}}),
 		keys:        newDetailKeys(),
 		gate:        NewBuildGate(deps),
+		confirmGate: NewConfirmGate(deps),
 	}
 }
 
@@ -468,6 +480,18 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 	if handled {
 		return m, gateCmd
 	}
+	cgate, cgateCmd, chandled := m.confirmGate.Update(msg)
+	m.confirmGate = cgate
+	if _, wanted := m.confirmGate.ArtifactsWanted(); wanted {
+		// `a` in the Confirm modal: show the Artifacts tab (#525).
+		m.confirmGate = m.confirmGate.Reset()
+		var tabCmd tea.Cmd
+		m, tabCmd = m.showArtifactsTab()
+		return m, tea.Batch(cgateCmd, tabCmd)
+	}
+	if chandled {
+		return m, cgateCmd
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -475,12 +499,14 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.height = msg.Height
 		debug.Logf("detail", "WindowSizeMsg W=%d H=%d", msg.Width, msg.Height)
 		m.gate.SetWidth(m.width)
+		m.confirmGate.SetWidth(m.width)
 		m.syncLayout()
 		return m, nil
 	case detailLoadedMsg:
 		m.loading = false
 		m.err = msg.err
 		if msg.err != nil {
+			m.showArtifacts = false
 			return m, nil
 		}
 		m.review = msg.review
@@ -496,6 +522,10 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.warnings = msg.warnings
 		m.refreshContent()
 		m.syncLayout()
+		if m.showArtifacts {
+			m.showArtifacts = false
+			return m.showArtifactsTab()
+		}
 		return m, nil
 	case msgs.OperationCompletedMsg:
 		if m.pkgName == "" {
@@ -544,6 +574,8 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		return m, nil
 	case PackageSelectedMsg:
 		m.gate = m.gate.Reset()
+		m.confirmGate = m.confirmGate.Reset()
+		m.showArtifacts = msg.ShowArtifacts
 		m.pkgName = msg.Pkg
 		m.tab = TabSummary
 		m.loading = true
@@ -562,6 +594,7 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.artifactErr = nil
 		m.artifactBuild = nil
 		m.artifactBuildErr = nil
+		m.artifactInspections = nil
 		m.refreshContent()
 		return m, m.loadDetailCmd()
 	case buildLogLoadedMsg:
@@ -588,6 +621,7 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 		m.artifactErr = msg.err
 		m.artifactBuild = msg.build
 		m.artifactBuildErr = msg.buildErr
+		m.artifactInspections = msg.inspections
 		m.refreshContent()
 		return m, nil
 	}
@@ -639,12 +673,9 @@ func (m PackageDetailModel) Update(msg tea.Msg) (PackageDetailModel, tea.Cmd) {
 	}
 
 	if key.Matches(keyMsg, m.keys.confirmKey) && m.isConfirmEnabled() {
-		pkg := m.pkgName
-		return m, func() tea.Msg {
-			ctx := trace.Start(context.Background(), "confirm")
-			trace.Log(ctx, "key", "action", "fired", "op", "confirm", "pkg", pkg)
-			return msgs.ConfirmRequestedMsg{Pkg: pkg, TraceCtx: ctx}
-		}
+		var cmd tea.Cmd
+		m.confirmGate, cmd = m.confirmGate.Start(m.pkgName, m.tab == TabArtifactHistory)
+		return m, cmd
 	}
 
 	if key.Matches(keyMsg, m.keys.publishKey) && m.isPublishEnabled() {
@@ -850,6 +881,9 @@ func (m PackageDetailModel) View() string {
 	if m.gate.ModalOpen() {
 		return overlay.Render(body, m.gate.View(), m.width, m.height)
 	}
+	if m.confirmGate.ModalOpen() {
+		return overlay.Render(body, m.confirmGate.View(), m.width, m.height)
+	}
 	return body
 }
 
@@ -1036,6 +1070,7 @@ func (m PackageDetailModel) loadArtifactHistoryCmd() tea.Cmd {
 			_ = errorlog.Log(ctx, d.Config.RootPath, "artifacts", fmt.Sprintf("%s: %v", pkg, err))
 		}
 		out = artifactLoadedMsg{pkg: pkg, artifacts: arts, err: err}
+		out.inspections = inspectArtifacts(ctx, d, pkg, arts)
 
 		// The build the artifacts came from, for the header (#507).
 		if len(arts) > 0 && d.BuildEngine.BuildStore() != nil {
@@ -1244,13 +1279,23 @@ func (m *PackageDetailModel) refreshContent() {
 		}
 		m.contentPane.SetContent(renderBuildLogView(m.buildLogContent, m.buildLogNotice, m.buildLogErr, m.buildLogHeader()))
 	case TabArtifactHistory:
-		m.contentPane.SetContent(renderArtifactsView(m.artifactsLoading, m.artifactHistory, m.artifactErr, m.artifactsHeader()))
+		m.contentPane.SetContent(renderArtifactsView(m.artifactsLoading, m.artifactHistory, m.artifactErr, m.artifactsHeader(), m.artifactInspections))
 	default:
 		m.contentPane.SetContent(m.renderSummaryTab())
 	}
 }
 
 // tabLoadCmd returns the async load a tab needs on entry, or nil.
+// showArtifactsTab switches to the Artifacts tab and loads it (#525).
+func (m PackageDetailModel) showArtifactsTab() (PackageDetailModel, tea.Cmd) {
+	m.tab = TabArtifactHistory
+	m.artifactsLoading = true
+	m.artifactErr = nil
+	m.syncLayout()
+	m.refreshContent()
+	return m, m.tabLoadCmd()
+}
+
 func (m PackageDetailModel) tabLoadCmd() tea.Cmd {
 	switch m.tab {
 	case TabBuildLog:
@@ -1264,7 +1309,7 @@ func (m PackageDetailModel) tabLoadCmd() tea.Cmd {
 // renderArtifactsView renders the Artifacts tab: a loading indicator, a
 // whole-store error, partial-record errors with per-record lines, or the
 // normal artifact content under header (#507).
-func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error, header string) string {
+func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error, header string, insp []artifactInspection) string {
 	if loading {
 		return theme.SubtleStyle().Render("Loading artifacts…")
 	}
@@ -1290,7 +1335,7 @@ func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error, h
 			if len(artifacts) == 0 {
 				b.WriteString(theme.SubtleStyle().Render("No artifacts recorded for this package"))
 			} else {
-				b.WriteString(renderArtifactHistoryContent(header, artifacts))
+				b.WriteString(renderArtifactHistoryContent(header, artifacts, insp))
 			}
 			return b.String()
 		}
@@ -1302,12 +1347,12 @@ func renderArtifactsView(loading bool, artifacts []domain.Artifact, err error, h
 	if len(artifacts) == 0 {
 		return theme.SubtleStyle().Render("No artifacts recorded for this package")
 	}
-	return renderArtifactHistoryContent(header, artifacts)
+	return renderArtifactHistoryContent(header, artifacts, insp)
 }
 
 // renderArtifactHistoryContent renders the artifacts under header, which
 // ends in its own blank line (#507).
-func renderArtifactHistoryContent(header string, artifacts []domain.Artifact) string {
+func renderArtifactHistoryContent(header string, artifacts []domain.Artifact, insp []artifactInspection) string {
 	if len(artifacts) == 0 {
 		return theme.SubtleStyle().Render("No artifacts recorded for this package")
 	}
@@ -1322,6 +1367,12 @@ func renderArtifactHistoryContent(header string, artifacts []domain.Artifact) st
 		}
 		if art.Size > 0 {
 			fmt.Fprintf(&b, "     Size: %s\n", formatSize(art.Size))
+		}
+		// What it installs with special power (#525).
+		if i < len(insp) {
+			for _, l := range inspectionLines(insp[i], "     ") {
+				b.WriteString(l + "\n")
+			}
 		}
 		b.WriteString("\n")
 	}

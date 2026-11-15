@@ -204,8 +204,10 @@ initialization marker before becoming `BuildRunning`.
 
 `Confirmed` is a workflow gate, not a content check — it applies
 package-wide to the artifact(s) of the last successful build as a single
-unit, requiring explicit user acknowledgement before Publish. It performs no
-independent verification.
+unit, requiring explicit user acknowledgement before Publish. Before the
+user confirms, aur-curator shows what each artifact installs with special
+power (§ Build → Confirmed, #525); it verifies nothing and blocks
+nothing.
 
 ### Relationships
 
@@ -857,9 +859,46 @@ after a hard kill. Its workspace is kept with the interrupted build
 ### Confirmed
 
 `confirmed` is a workflow gate, not a content check. It records the user's
-explicit acknowledgement that the produced artifacts are ready to publish.
-It performs no independent verification of build output — a stored gate,
-like `Review.status`, not a computed check. `confirmed` is per-Build, not
+explicit acknowledgement that the produced artifacts are ready to publish:
+a stored gate, like `Review.status`, not a computed check.
+
+**The inspection** (#525, P7). Before the user confirms, aur-curator
+reads each artifact of the last success and lists what it installs with
+special power: the facts the user confirms, not a verdict on them. It is
+derived from the archive each time it is shown, never stored, never
+blocking, and compares nothing with the PKGBUILD.
+
+- **Read** with `bsdtar`'s mtree listing of the archive's own entries
+  (`--format=mtree @<file>`; every field labelled, names escaped), in the
+  build sandbox (§ Build Environment) with the build directory
+  read-only and no network. Nothing is extracted. `.INSTALL`'s text is
+  read the same way when the user asks to see it.
+- **Listed**, each entry once, in the first category that applies:
+
+  | Category | Entries |
+  | --- | --- |
+  | setuid / setgid | a file with mode 04000 or 02000 (with its mode and owner) |
+  | not owned by root | an entry whose uid or gid is not 0, directories included (with its owner) |
+  | install script | `.INSTALL` |
+  | pacman hook | under `usr/share/libalpm/hooks/` or `etc/pacman.d/hooks/` |
+  | systemd unit | under `usr/lib/systemd/system/`, `usr/lib/systemd/user/` or `etc/systemd/` |
+  | sudoers | `etc/sudoers`, under `etc/sudoers.d/` |
+  | sysusers / tmpfiles | under `usr/lib/sysusers.d/` or `usr/lib/tmpfiles.d/` |
+  | udev rule | under `usr/lib/udev/rules.d/` or `etc/udev/rules.d/` |
+  | polkit rule | under `usr/share/polkit-1/rules.d/` or `etc/polkit-1/rules.d/` |
+  | under /etc | any other file or link under `etc/` |
+  | unusual entry | a device, FIFO or socket; a path that is absolute or holds `..` |
+
+  makepkg's own metadata (`.BUILDINFO`, `.MTREE`, `.PKGINFO`) is not
+  listed; other directories are listed only when not owned by root.
+- **An artifact that cannot be read** (missing file, not an archive,
+  bsdtar failing) is shown as such and written to the error log; the
+  others are still listed, and Confirm stays possible.
+- **Shown** on Package Details' Artifacts tab and in the Confirm modal
+  (`workflow.md` § Confirm Confirmation).
+- **The build confirmed is the build inspected:** Confirm carries the
+  inspected build's ID and refuses, recording nothing, if the last
+  success is another build by then. `confirmed` is per-Build, not
 per-Artifact: multiple assets from one build are treated as a single
 Package-level unit, so one confirmation covers the whole artifact set.
 Every new successful build replaces the last success with

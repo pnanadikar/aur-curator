@@ -407,7 +407,7 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, queueCmd
 	case msgs.ConfirmRequestedMsg:
 		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpConfirm, Pkg: msg.Pkg, TraceCtx: ctx, Cancel: cancel})
+		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpConfirm, Pkg: msg.Pkg, BuildID: msg.BuildID, TraceCtx: ctx, Cancel: cancel})
 		if !ok {
 			return a.setToast("Already queued: " + string(msg.Pkg))
 		}
@@ -807,7 +807,7 @@ func (a App) handleNavigate(msg msgs.NavigateMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case msgs.ScreenPackageDetail:
 		var cmd, sizeCmd tea.Cmd
-		a.detail, cmd = a.detail.Update(screens.PackageSelectedMsg{Pkg: msg.Package})
+		a.detail, cmd = a.detail.Update(screens.PackageSelectedMsg{Pkg: msg.Package, ShowArtifacts: msg.ShowArtifacts})
 		a.detail, sizeCmd = a.detail.Update(a.screenWindowSizeMsg())
 		return a, tea.Batch(cmd, sizeCmd)
 	case msgs.ScreenReview:
@@ -913,6 +913,11 @@ func (a App) executeOperation(op Operation) tea.Cmd {
 			}
 			if ls.Confirmed {
 				return fail(errors.New("already confirmed"))
+			}
+			// The build confirmed is the build the Confirm modal showed
+			// (#525; workflow.md note 9).
+			if op.BuildID != "" && ls.ID != op.BuildID {
+				return fail(errors.New("a newer build replaced the one you inspected; press c again"))
 			}
 			if err := a.requireBuildOfHead(ctx, op.Pkg, ls); err != nil {
 				return fail(err)

@@ -9,4 +9,7 @@ import "github.com/pramod/aur-curator/internal/domain"
 // setters across package boundaries.
 type PackageSelectedMsg struct {
 	Pkg domain.PackageName
+	// ShowArtifacts opens the screen on its Artifacts tab once the
+	// package has loaded (#525).
+	ShowArtifacts bool
 }

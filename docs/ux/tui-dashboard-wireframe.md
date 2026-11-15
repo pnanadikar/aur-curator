@@ -321,6 +321,8 @@ to the selected row only.
 
 Build always goes through the Build confirmation flow (`workflow.md`
 § Build Confirmation). Its prompts open as a modal over the Dashboard.
+Confirm always goes through the Confirm modal (`workflow.md` § Confirm
+Confirmation, #525); its `a` opens Package Details on the Artifacts tab.
 
 `R` reloads the package list, review data and AUR check. If the list is
 empty (for example because the first load failed), it shows the loading

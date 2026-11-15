@@ -80,7 +80,15 @@ func TestDetailConfirmPublishKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := detailAt(tc.ls, "A")
-			_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
+			m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
+			// c goes through the Confirm modal (#525): inspection, then y.
+			if cmd != nil && m.confirmGate.ModalOpen() {
+				m, _ = m.Update(cmd())
+				if !m.confirmGate.ModalOpen() {
+					t.Fatal("no Confirm modal after the inspection")
+				}
+				_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+			}
 			var got string
 			if cmd != nil {
 				switch msg := cmd().(type) {
