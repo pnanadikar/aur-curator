@@ -36,6 +36,28 @@ documentation. For installing and using aur-curator, see the
  whose key/value arguments don’t pair up. The compiler can't catch
 those, and they silently drop log fields.
 
+### The App golden file
+
+`TestCharacterizeUpdate529` (`internal/ui/characterize529_test.go`)
+sends a fixed script of messages through `App.update` and compares a
+record of App after each one (state, queue, `View()`, the messages its
+commands produce) with `internal/ui/testdata/characterize529.golden`
+(#529). It runs in `make test`.
+
+It fails on any change to what App does or shows, including layout and
+the Help screen's text. When the change is deliberate, regenerate the
+file and read the diff:
+
+```
+go test ./internal/ui -run TestCharacterizeUpdate529 -update-golden529
+git diff internal/ui/testdata/characterize529.golden
+```
+
+The diff is the change in behaviour, step by step: commit it with the
+change, and review it like code. A refactor must leave the file
+unchanged. A new message kind or App branch gets a step in
+`characterizeScript`.
+
 ### Before a change is merged
 
 - `make build`, `make test` and `make lint` are clean. `make lint`
@@ -45,6 +67,9 @@ those, and they silently drop log fields.
 - `make test-race` is clean when the change touches goroutines,
   `tea.Cmd` concurrency, or state shared between tests (for example
   parallel subtests).
+- A change to App's behaviour or screens regenerates the App golden
+  file (above), and its diff is part of the review; a refactor leaves it
+  unchanged.
 - `make test-sandbox` is clean when the change touches
   `internal/sandbox`, `internal/build`'s makepkg path or the build
   environment (#496).

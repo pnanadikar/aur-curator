@@ -47,9 +47,8 @@ var quitKeys = []string{"ctrl+c", "ctrl+q"}
 // only knows how to render its own slice of state. App is the only model
 // allowed to change which screen is active.
 type App struct {
-	screen      msgs.Screen
-	history     []msgs.Screen // back-navigation stack
-	lastRefresh time.Time     // when dashboard was last refreshed
+	screen  msgs.Screen
+	history []msgs.Screen // back-navigation stack
 
 	// shared, cross-screen state
 	ops OperationsQueue // single global queue — no concurrent builds
@@ -84,22 +83,28 @@ type App struct {
 
 	// dependencies
 	deps deps.Dependencies
+
+	// after schedules a message after a delay: tea.Tick when nil. A test
+	// seam (#529): the characterization test records the toast timer
+	// instead of waiting for it.
+	after func(time.Duration, func(time.Time) tea.Msg) tea.Cmd
 }
 
 // NewApp constructs a new App with the given dependencies.
 func NewApp(deps Dependencies) App {
 	return App{
-		screen:      msgs.ScreenDashboard,
-		lastRefresh: time.Now(),
-		dashboard:   screens.NewDashboardModel(deps),
-		detail:      screens.NewPackageDetailModel(deps),
-		repoStatus:  screens.NewRepositoryStatusModel(deps),
-		settings:    screens.NewSettingsModel(deps),
-		help:        screens.NewHelpModel(),
-		deps:        deps,
+		screen:     msgs.ScreenDashboard,
+		dashboard:  screens.NewDashboardModel(deps),
+		detail:     screens.NewPackageDetailModel(deps),
+		repoStatus: screens.NewRepositoryStatusModel(deps),
+		settings:   screens.NewSettingsModel(deps),
+		help:       screens.NewHelpModel(),
+		deps:       deps,
 	}
 }
 
+// Init starts the Dashboard's first load, and the startup notice when
+// there is one.
 func (a App) Init() tea.Cmd {
 	if cmd := a.startupNoticeCmd(); cmd != nil {
 		return tea.Batch(a.dashboard.Init(), cmd)
@@ -142,6 +147,7 @@ func (a App) startupNoticeCmd() tea.Cmd {
 	return func() tea.Msg { return startupNoticeMsg{text: text} }
 }
 
+// setToast shows text as a toast for toastDuration (setToastFor).
 func (a App) setToast(text string) (App, tea.Cmd) {
 	return a.setToastFor(text, toastDuration)
 }
@@ -153,7 +159,11 @@ func (a App) setToastFor(text string, d time.Duration) (App, tea.Cmd) {
 	a.toast = text
 	a.toastID++
 	id := a.toastID
-	return a, tea.Tick(d, func(time.Time) tea.Msg {
+	tick := a.after
+	if tick == nil {
+		tick = tea.Tick
+	}
+	return a, tick(d, func(time.Time) tea.Msg {
 		return clearToastMsg{id: id}
 	})
 }
@@ -208,320 +218,35 @@ func (a App) syncScreenSize() (App, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
-// update routes incoming messages to the active screen's sub-model and
-// handles cross-cutting concerns (navigation, operations queue,
-// toast/error display).
+// update is a dispatcher over one handler per stage, in order
+// (developer-guide.md § Update, #529).
 func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		debug.Logf("app", "WindowSizeMsg received: W=%d H=%d", msg.Width, msg.Height)
-		return a.handleWindowSize(msg)
-	case tea.KeyMsg:
-		if a.quitConfirmActive {
-			result, cmd := a.quitConfirmModal.Update(msg)
-			if result.Confirmed {
-				return a, tea.Quit
-			}
-			if result.Cancelled {
-				a.quitConfirmActive = false
-				a.quitConfirmModal = widgets.ConfirmModal{}
-				return a, nil
-			}
-			return a, cmd
-		}
-		for _, k := range quitKeys {
-			if msg.String() == k {
-				return a.requestQuit()
-			}
-		}
-		if msg.String() == "ctrl+t" {
-			if a.ops.active != nil {
-				trace.Log(a.ops.active.TraceCtx, "key", "action", "fired", "op", "cancel", "pkg", string(a.ops.active.Pkg))
-			}
-			if a.ops.CancelActive() {
-				return a, nil
-			}
-			if a.ops.LenPending() > 0 {
-				a.ops.ClearPending()
-			}
-		}
+	// 1. Window size and the keys App owns. Not done: the message goes
+	// on with the App handleKeys returned (ctrl+t with nothing running
+	// has cleared the pending operations).
+	next, cmd, done := a.handleKeys(msg)
+	if done {
+		return next, cmd
 	}
-
-	// Navigation messages are handled exclusively by App; sub-models
-	// never navigate themselves.
-	switch msg := msg.(type) {
-	case msgs.BackMsg:
-		return a.handleBack(msg, nil)
-	case msgs.ReviewDecisionBackMsg:
-		return a.handleBack(msgs.BackMsg{Changed: msg.Changed}, &msg)
-	case msgs.NavigateMsg:
-		return a.handleNavigate(msg)
-	case msgs.QuitRequestedMsg:
-		return a.requestQuit()
+	a = next
+	// 2 and 3. Navigation, toasts and errors: they stop every message
+	// they handle, so they never pass on a changed App.
+	if m, cmd, done := a.handleNavigation(msg); done {
+		return m, cmd
 	}
-
-	// Toast messages are consumed at the App level so they don't
-	// reach sub-models.
-	switch msg := msg.(type) {
-	case msgs.ToastMsg:
-		return a.setToast(msg.Text)
-	case msgs.ToolDoneMsg:
-		return a.toolDone(msg)
-	case startupNoticeMsg:
-		return a.setToastFor(msg.text, startupNoticeDuration)
-	case clearToastMsg:
-		if msg.id == a.toastID {
-			a.toast = ""
-		}
-		return a, nil
-	case ErrorMsg:
-		a.err = msg.Err
-		return a, nil
+	if m, cmd, done := a.handleToasts(msg); done {
+		return m, cmd
 	}
-
-	// Operation lifecycle messages — App owns the queue.
-	// Compute queue side-effects without early return so the
-	// forward-to-submodel logic below can still execute and
-	// deliver OperationCompletedMsg/OperationFailedMsg to the
-	// active screen.
-	var queueCmd tea.Cmd
-	switch msg := msg.(type) {
-	case msgs.OperationCompletedMsg:
-		op := *a.ops.active
-		a.ops.Complete()
-		var message string
-		if s, ok := msg.Result.(string); ok && s != "" {
-			message = s
-		} else {
-			message = "Completed"
-		}
-		a.ops.MarkCompleted(op, message)
-		var next App
-		next, queueCmd = a.drainQueueCmd()
-		if reason, ok := msg.Result.(string); ok && reason != "" {
-			var toastCmd tea.Cmd
-			next, toastCmd = next.setToast(reason)
-			queueCmd = tea.Batch(queueCmd, toastCmd)
-		}
-		a = next
-	case msgs.OperationFailedMsg:
-		op := *a.ops.active
-		_ = errorlog.Log(
-			msg.TraceCtx,
-			a.deps.Config.RootPath,
-			op.Kind.String(),
-			fmt.Sprintf("%q: %s", op.Pkg, msg.Err.Error()),
-		)
-		a.ops.Complete()
-		a.ops.MarkFailed(op, msg.Err)
-		var next App
-		next, queueCmd = a.drainQueueCmd()
-		reason := "Operation failed: " + msg.Err.Error()
-		var toastCmd tea.Cmd
-		next, toastCmd = next.setToast(reason)
-		queueCmd = tea.Batch(queueCmd, toastCmd)
-		a = next
-	case msgs.OperationCancelledMsg:
-		// A cancel that no longer matches the active operation — none
-		// active, or a different one — is stale (late or duplicate) and
-		// must neither panic nor cancel the wrong operation (#335).
-		if a.ops.active == nil || a.ops.active.ID != msg.OpID {
-			if msg.TraceCtx != nil {
-				trace.Log(msg.TraceCtx, "msg", "type", "OperationCancelledMsg", "opID", msg.OpID, "result", "ignored-stale")
-			}
-			break
-		}
-		op := *a.ops.active
-		_ = aurlog.Log(
-			msg.TraceCtx,
-			a.deps.Config.ActivityLogPath,
-			op.Kind.String(),
-			string(op.Pkg),
-			"status", "cancelled",
-			"reason", "user_abort",
-		)
-		a.ops.MarkCancelled(op)
-		a.ops.Complete()
-		var next App
-		next, queueCmd = a.drainQueueCmd()
-		var toastCmd tea.Cmd
-		next, toastCmd = next.setToast("Operation cancelled: " + string(op.Pkg))
-		queueCmd = tea.Batch(queueCmd, toastCmd)
-		a = next
+	// 4. Operation results: never stops a message; results go on to
+	// every screen but Help, with the App and queue command returned
+	// here.
+	a, queueCmd := a.handleOperationResult(msg)
+	// 5. Requests: every one is queued and stops here.
+	if m, cmd, done := a.handleRequest(msg); done {
+		return m, cmd
 	}
-
-	// User-triggered action messages: queue them instead of executing.
-	// Wrap msg.TraceCtx with context.WithCancel so the cancel function
-	// can be stored on Operation and invoked when the user presses X.
-	switch msg := msg.(type) {
-	case msgs.FetchRequestedMsg:
-		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpFetch, Pkg: msg.Pkg, TraceCtx: ctx, Cancel: cancel})
-		if !ok {
-			return a.setToast("Already queued: " + string(msg.Pkg))
-		}
-		a, queueCmd := a.drainQueueCmd()
-		if depth > 0 {
-			items := "items"
-			if depth == 1 {
-				items = "item"
-			}
-			var toastCmd tea.Cmd
-			a, toastCmd = a.setToast(fmt.Sprintf("%d %s ahead of you in queue", depth, items))
-			return a, tea.Batch(queueCmd, toastCmd)
-		}
-		return a, queueCmd
-	case msgs.AnalyzeRequestedMsg:
-		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpAnalyze, Pkg: msg.Pkg, ReviewID: msg.ReviewID, TraceCtx: ctx, Cancel: cancel})
-		if !ok {
-			return a.setToast("Already queued: " + string(msg.Pkg))
-		}
-		a, queueCmd := a.drainQueueCmd()
-		if depth > 0 {
-			items := "items"
-			if depth == 1 {
-				items = "item"
-			}
-			var toastCmd tea.Cmd
-			a, toastCmd = a.setToast(fmt.Sprintf("%d %s ahead of you in queue", depth, items))
-			return a, tea.Batch(queueCmd, toastCmd)
-		}
-		return a, queueCmd
-	case msgs.BuildRequestedMsg:
-		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpBuild, Pkg: msg.Pkg, TraceCtx: ctx, Cancel: cancel})
-		if !ok {
-			return a.setToast("Already queued: " + string(msg.Pkg))
-		}
-		a, queueCmd := a.drainQueueCmd()
-		if depth > 0 {
-			items := "items"
-			if depth == 1 {
-				items = "item"
-			}
-			var toastCmd tea.Cmd
-			a, toastCmd = a.setToast(fmt.Sprintf("%d %s ahead of you in queue", depth, items))
-			return a, tea.Batch(queueCmd, toastCmd)
-		}
-		return a, queueCmd
-	case msgs.ConfirmRequestedMsg:
-		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpConfirm, Pkg: msg.Pkg, BuildID: msg.BuildID, TraceCtx: ctx, Cancel: cancel})
-		if !ok {
-			return a.setToast("Already queued: " + string(msg.Pkg))
-		}
-		a, queueCmd := a.drainQueueCmd()
-		if depth > 0 {
-			items := "items"
-			if depth == 1 {
-				items = "item"
-			}
-			var toastCmd tea.Cmd
-			a, toastCmd = a.setToast(fmt.Sprintf("%d %s ahead of you in queue", depth, items))
-			return a, tea.Batch(queueCmd, toastCmd)
-		}
-		return a, queueCmd
-	case msgs.PublishRequestedMsg:
-		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpPublish, Pkg: msg.Pkg, TraceCtx: ctx, Cancel: cancel})
-		if !ok {
-			return a.setToast("Already queued: " + string(msg.Pkg))
-		}
-		a, queueCmd := a.drainQueueCmd()
-		if depth > 0 {
-			items := "items"
-			if depth == 1 {
-				items = "item"
-			}
-			var toastCmd tea.Cmd
-			a, toastCmd = a.setToast(fmt.Sprintf("%d %s ahead of you in queue", depth, items))
-			return a, tea.Batch(queueCmd, toastCmd)
-		}
-		return a, queueCmd
-	case msgs.MergeRequestedMsg:
-		ctx, cancel := context.WithCancel(msg.TraceCtx)
-		ok, depth := a.ops.Enqueue(Operation{ID: string(msg.Pkg), Kind: OpMerge, Pkg: msg.Pkg, TraceCtx: ctx, Cancel: cancel})
-		if !ok {
-			return a.setToast("Already queued: " + string(msg.Pkg))
-		}
-		a, queueCmd := a.drainQueueCmd()
-		if depth > 0 {
-			items := "items"
-			if depth == 1 {
-				items = "item"
-			}
-			var toastCmd tea.Cmd
-			a, toastCmd = a.setToast(fmt.Sprintf("%d %s ahead of you in queue", depth, items))
-			return a, tea.Batch(queueCmd, toastCmd)
-		}
-		return a, queueCmd
-	}
-
-	// Broadcast operation completion/failure/cancellation to every screen so each
-	// can independently refresh its derived state regardless of which
-	// screen is currently active.  All other message types continue to
-	// reach only the active screen (e.g. NavigateMsg).
-	var cmd tea.Cmd
-	switch msg.(type) {
-	case msgs.OperationCompletedMsg, msgs.OperationFailedMsg, msgs.OperationCancelledMsg:
-		var cmds []tea.Cmd
-		var d screens.DashboardModel
-		d, c := a.dashboard.Update(msg)
-		if c != nil {
-			cmds = append(cmds, c)
-		}
-		a.dashboard = d
-		var dt screens.PackageDetailModel
-		dt, c = a.detail.Update(msg)
-		if c != nil {
-			cmds = append(cmds, c)
-		}
-		a.detail = dt
-		var rv screens.ReviewScreen
-		rv, c = a.review.Update(msg)
-		if c != nil {
-			cmds = append(cmds, c)
-		}
-		a.review = rv
-		var rs screens.RepositoryStatusModel
-		rs, c = a.repoStatus.Update(msg)
-		if c != nil {
-			cmds = append(cmds, c)
-		}
-		a.repoStatus = rs
-		var s screens.SettingsModel
-		s, c = a.settings.Update(msg)
-		if c != nil {
-			cmds = append(cmds, c)
-		}
-		a.settings = s
-		cmd = tea.Batch(cmds...)
-	case screens.PackagesLoadedMsg, screens.ReviewDataMsg, msgs.AURUpdateMsg:
-		// Dashboard-only consumers: these startup messages must reach the
-		// dashboard regardless of the active screen, otherwise navigating
-		// away before they resolve drops them (see #286).
-		a.dashboard, cmd = a.dashboard.Update(msg)
-	default:
-		switch a.screen {
-		case msgs.ScreenDashboard:
-			a.dashboard, cmd = a.dashboard.Update(msg)
-		case msgs.ScreenPackageDetail:
-			a.detail, cmd = a.detail.Update(msg)
-		case msgs.ScreenReview:
-			a.review, cmd = a.review.Update(msg)
-		case msgs.ScreenRepositoryStatus:
-			a.repoStatus, cmd = a.repoStatus.Update(msg)
-		case msgs.ScreenSettings:
-			a.settings, cmd = a.settings.Update(msg)
-		case msgs.ScreenHelp:
-			a.help, cmd = a.help.Update(msg)
-		}
-	}
-	if queueCmd != nil {
-		cmd = tea.Batch(cmd, queueCmd)
-	}
-	return a, cmd
+	// 6. Everything else, and the results, to the screens.
+	return a.forward(msg, queueCmd)
 }
 
 // View renders the active screen body, with the Operations Panel and
@@ -579,9 +304,15 @@ func capBody(body string, rows int) string {
 	return strings.Join(lines[:rows], "\n")
 }
 
+// viewHeader renders the header: the title and running version, the
+// workspace, and on a second line the Dashboard's last successful load,
+// "—" before the first (#532).
 func (a App) viewHeader() string {
 	workspace := a.deps.Config.RootPath
-	refresh := a.lastRefresh.Format("15:04")
+	refresh := "—"
+	if t := a.dashboard.LastRefresh(); !t.IsZero() {
+		refresh = t.Format("15:04")
+	}
 
 	// The running version, dimmed: the same value --version prints (#481).
 	title := theme.HeaderStyle().Render("aur-curator") + " " + theme.DimmedStyle().Render(version.Version)
@@ -693,8 +424,327 @@ func (a App) renderDashboardBox() string {
 	return widgets.WrapScreenBody(a.width, body)
 }
 
+// handleKeys is update's stage 1 (#529): the window size, and the keys
+// App handles before any screen. done reports that the message stops
+// here; when it is false the message goes on with the returned App.
+func (a App) handleKeys(msg tea.Msg) (App, tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		debug.Logf("app", "WindowSizeMsg received: W=%d H=%d", msg.Width, msg.Height)
+		next, cmd := a.handleWindowSize(msg)
+		return next, cmd, true
+	case tea.KeyMsg:
+		if a.quitConfirmActive {
+			return a.handleQuitConfirmKey(msg)
+		}
+		for _, k := range quitKeys {
+			if msg.String() == k {
+				next, cmd := a.requestQuit()
+				return next, cmd, true
+			}
+		}
+		if msg.String() == "ctrl+t" {
+			return a.handleCancelKey()
+		}
+	}
+	return a, nil, false
+}
+
+// handleNavigation is update's stage 2 (#529): navigation is handled
+// by App alone; screens never navigate themselves. done reports that
+// the message stops here.
+func (a App) handleNavigation(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case msgs.BackMsg:
+		m, cmd := a.handleBack(msg, nil)
+		return m, cmd, true
+	case msgs.ReviewDecisionBackMsg:
+		m, cmd := a.handleBack(msgs.BackMsg{Changed: msg.Changed}, &msg)
+		return m, cmd, true
+	case msgs.NavigateMsg:
+		m, cmd := a.handleNavigate(msg)
+		return m, cmd, true
+	case msgs.QuitRequestedMsg:
+		m, cmd := a.requestQuit()
+		return m, cmd, true
+	}
+	return a, nil, false
+}
+
+// handleToasts is update's stage 3 (#529): toasts and errors are
+// consumed by App so they don't reach screens. done reports that the
+// message stops here.
+func (a App) handleToasts(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case msgs.ToastMsg:
+		m, cmd := a.setToast(msg.Text)
+		return m, cmd, true
+	case msgs.ToolDoneMsg:
+		m, cmd := a.toolDone(msg)
+		return m, cmd, true
+	case startupNoticeMsg:
+		m, cmd := a.setToastFor(msg.text, startupNoticeDuration)
+		return m, cmd, true
+	case clearToastMsg:
+		if msg.id == a.toastID {
+			a.toast = ""
+		}
+		return a, nil, true
+	case ErrorMsg:
+		a.err = msg.Err
+		return a, nil, true
+	}
+	return a, nil, false
+}
+
+// handleOperationResult is update's stage 4 (#529): App owns the
+// queue. It records a result and starts the next operation, and never
+// stops the message, which goes on to every screen but Help; the
+// returned command is batched with the screens' there.
+func (a App) handleOperationResult(msg tea.Msg) (App, tea.Cmd) {
+	switch msg := msg.(type) {
+	case msgs.OperationCompletedMsg:
+		return a.onOperationCompleted(msg)
+	case msgs.OperationFailedMsg:
+		return a.onOperationFailed(msg)
+	case msgs.OperationCancelledMsg:
+		return a.onOperationCancelled(msg)
+	}
+	return a, nil
+}
+
+// onOperationCompleted completes the active operation, starts the next
+// and shows the result's text, if any, as a toast.
+func (a App) onOperationCompleted(msg msgs.OperationCompletedMsg) (App, tea.Cmd) {
+	var queueCmd tea.Cmd
+	op := *a.ops.active
+	a.ops.Complete()
+	var message string
+	if s, ok := msg.Result.(string); ok && s != "" {
+		message = s
+	} else {
+		message = "Completed"
+	}
+	a.ops.MarkCompleted(op, message)
+	var next App
+	next, queueCmd = a.drainQueueCmd()
+	if reason, ok := msg.Result.(string); ok && reason != "" {
+		var toastCmd tea.Cmd
+		next, toastCmd = next.setToast(reason)
+		queueCmd = tea.Batch(queueCmd, toastCmd)
+	}
+	a = next
+	return a, queueCmd
+}
+
+// onOperationFailed logs the failure, completes the active operation,
+// starts the next and shows the error as a toast.
+func (a App) onOperationFailed(msg msgs.OperationFailedMsg) (App, tea.Cmd) {
+	var queueCmd tea.Cmd
+	op := *a.ops.active
+	_ = errorlog.Log(
+		msg.TraceCtx,
+		a.deps.Config.RootPath,
+		op.Kind.String(),
+		fmt.Sprintf("%q: %s", op.Pkg, msg.Err.Error()),
+	)
+	a.ops.Complete()
+	a.ops.MarkFailed(op, msg.Err)
+	var next App
+	next, queueCmd = a.drainQueueCmd()
+	reason := "Operation failed: " + msg.Err.Error()
+	var toastCmd tea.Cmd
+	next, toastCmd = next.setToast(reason)
+	queueCmd = tea.Batch(queueCmd, toastCmd)
+	a = next
+	return a, queueCmd
+}
+
+// onOperationCancelled records a cancel of the active operation, starts
+// the next and shows a toast.
+func (a App) onOperationCancelled(msg msgs.OperationCancelledMsg) (App, tea.Cmd) {
+	var queueCmd tea.Cmd
+	// A cancel that no longer matches the active operation — none
+	// active, or a different one — is stale (late or duplicate) and
+	// must neither panic nor cancel the wrong operation (#335).
+	if a.ops.active == nil || a.ops.active.ID != msg.OpID {
+		if msg.TraceCtx != nil {
+			trace.Log(msg.TraceCtx, "msg", "type", "OperationCancelledMsg", "opID", msg.OpID, "result", "ignored-stale")
+		}
+		return a, nil
+	}
+	op := *a.ops.active
+	_ = aurlog.Log(
+		msg.TraceCtx,
+		a.deps.Config.ActivityLogPath,
+		op.Kind.String(),
+		string(op.Pkg),
+		"status", "cancelled",
+		"reason", "user_abort",
+	)
+	a.ops.MarkCancelled(op)
+	a.ops.Complete()
+	var next App
+	next, queueCmd = a.drainQueueCmd()
+	var toastCmd tea.Cmd
+	next, toastCmd = next.setToast("Operation cancelled: " + string(op.Pkg))
+	queueCmd = tea.Batch(queueCmd, toastCmd)
+	a = next
+	return a, queueCmd
+}
+
+// handleRequest is update's stage 5 (#529): a user's request is queued,
+// never run directly. done reports that the message stops here; every
+// request does.
+func (a App) handleRequest(msg tea.Msg) (App, tea.Cmd, bool) {
+	var op Operation
+	switch msg := msg.(type) {
+	case msgs.FetchRequestedMsg:
+		op = Operation{ID: string(msg.Pkg), Kind: OpFetch, Pkg: msg.Pkg, TraceCtx: msg.TraceCtx}
+	case msgs.AnalyzeRequestedMsg:
+		op = Operation{ID: string(msg.Pkg), Kind: OpAnalyze, Pkg: msg.Pkg, ReviewID: msg.ReviewID, TraceCtx: msg.TraceCtx}
+	case msgs.BuildRequestedMsg:
+		op = Operation{ID: string(msg.Pkg), Kind: OpBuild, Pkg: msg.Pkg, TraceCtx: msg.TraceCtx}
+	case msgs.ConfirmRequestedMsg:
+		op = Operation{ID: string(msg.Pkg), Kind: OpConfirm, Pkg: msg.Pkg, BuildID: msg.BuildID, TraceCtx: msg.TraceCtx}
+	case msgs.PublishRequestedMsg:
+		op = Operation{ID: string(msg.Pkg), Kind: OpPublish, Pkg: msg.Pkg, TraceCtx: msg.TraceCtx}
+	case msgs.MergeRequestedMsg:
+		op = Operation{ID: string(msg.Pkg), Kind: OpMerge, Pkg: msg.Pkg, TraceCtx: msg.TraceCtx}
+	default:
+		return a, nil, false
+	}
+	next, cmd := a.enqueueRequest(op)
+	return next, cmd, true
+}
+
+// enqueueRequest queues op and starts it if nothing is running, with a
+// toast when it is already queued or has operations ahead of it. It wraps
+// op.TraceCtx with context.WithCancel and stores the cancel function on
+// the Operation, for ^T.
+func (a App) enqueueRequest(op Operation) (App, tea.Cmd) {
+	ctx, cancel := context.WithCancel(op.TraceCtx)
+	op.TraceCtx, op.Cancel = ctx, cancel
+	ok, depth := a.ops.Enqueue(op)
+	if !ok {
+		return a.setToast("Already queued: " + string(op.Pkg))
+	}
+	a, queueCmd := a.drainQueueCmd()
+	if depth > 0 {
+		items := "items"
+		if depth == 1 {
+			items = "item"
+		}
+		var toastCmd tea.Cmd
+		a, toastCmd = a.setToast(fmt.Sprintf("%d %s ahead of you in queue", depth, items))
+		return a, tea.Batch(queueCmd, toastCmd)
+	}
+	return a, queueCmd
+}
+
+// forward is update's stage 6 (#529): it delivers msg to the screens,
+// batching queueCmd (from stage 4) with their commands.
+func (a App) forward(msg tea.Msg, queueCmd tea.Cmd) (App, tea.Cmd) {
+	// Broadcast operation completion/failure/cancellation to every screen
+	// except Help (it has no derived state), so each can independently
+	// refresh its derived state regardless of which screen is currently
+	// active. All other message types continue to reach only the active
+	// screen (e.g. NavigateMsg).
+	var cmd tea.Cmd
+	switch msg.(type) {
+	case msgs.OperationCompletedMsg, msgs.OperationFailedMsg, msgs.OperationCancelledMsg:
+		var cmds []tea.Cmd
+		var d screens.DashboardModel
+		d, c := a.dashboard.Update(msg)
+		if c != nil {
+			cmds = append(cmds, c)
+		}
+		a.dashboard = d
+		var dt screens.PackageDetailModel
+		dt, c = a.detail.Update(msg)
+		if c != nil {
+			cmds = append(cmds, c)
+		}
+		a.detail = dt
+		var rv screens.ReviewScreen
+		rv, c = a.review.Update(msg)
+		if c != nil {
+			cmds = append(cmds, c)
+		}
+		a.review = rv
+		var rs screens.RepositoryStatusModel
+		rs, c = a.repoStatus.Update(msg)
+		if c != nil {
+			cmds = append(cmds, c)
+		}
+		a.repoStatus = rs
+		var s screens.SettingsModel
+		s, c = a.settings.Update(msg)
+		if c != nil {
+			cmds = append(cmds, c)
+		}
+		a.settings = s
+		cmd = tea.Batch(cmds...)
+	case screens.PackagesLoadedMsg, screens.ReviewDataMsg, msgs.AURUpdateMsg:
+		// Dashboard-only consumers: these startup messages must reach the
+		// dashboard regardless of the active screen, otherwise navigating
+		// away before they resolve drops them (see #286).
+		a.dashboard, cmd = a.dashboard.Update(msg)
+	default:
+		switch a.screen {
+		case msgs.ScreenDashboard:
+			a.dashboard, cmd = a.dashboard.Update(msg)
+		case msgs.ScreenPackageDetail:
+			a.detail, cmd = a.detail.Update(msg)
+		case msgs.ScreenReview:
+			a.review, cmd = a.review.Update(msg)
+		case msgs.ScreenRepositoryStatus:
+			a.repoStatus, cmd = a.repoStatus.Update(msg)
+		case msgs.ScreenSettings:
+			a.settings, cmd = a.settings.Update(msg)
+		case msgs.ScreenHelp:
+			a.help, cmd = a.help.Update(msg)
+		}
+	}
+	if queueCmd != nil {
+		cmd = tea.Batch(cmd, queueCmd)
+	}
+	return a, cmd
+}
+
+// handleQuitConfirmKey sends a key to the open quit modal, which takes
+// every key: yes quits, no closes the modal.
+func (a App) handleQuitConfirmKey(msg tea.KeyMsg) (App, tea.Cmd, bool) {
+	result, cmd := a.quitConfirmModal.Update(msg)
+	if result.Confirmed {
+		return a, tea.Quit, true
+	}
+	if result.Cancelled {
+		a.quitConfirmActive = false
+		a.quitConfirmModal = widgets.ConfirmModal{}
+		return a, nil, true
+	}
+	return a, cmd, true
+}
+
+// handleCancelKey handles ctrl+t: it cancels the running operation, or
+// with none running drops the pending ones and lets the key go on to the
+// screen.
+func (a App) handleCancelKey() (App, tea.Cmd, bool) {
+	if a.ops.active != nil {
+		trace.Log(a.ops.active.TraceCtx, "key", "action", "fired", "op", "cancel", "pkg", string(a.ops.active.Pkg))
+	}
+	if a.ops.CancelActive() {
+		return a, nil, true
+	}
+	if a.ops.LenPending() > 0 {
+		a.ops.ClearPending()
+	}
+	return a, nil, false
+}
+
 // handleWindowSize forwards window-size changes to the active sub-model.
-func (a App) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+func (a App) handleWindowSize(msg tea.WindowSizeMsg) (App, tea.Cmd) {
 	a.width = msg.Width
 	a.height = msg.Height
 	debug.Logf("app", "forwarding resize to %s (content area: W=%d H=%d)", a.screen, msg.Width, max(a.height-a.topHeight()-a.bottomHeight(), 0))
@@ -797,10 +847,6 @@ func (a App) handleNavigate(msg msgs.NavigateMsg) (tea.Model, tea.Cmd) {
 	a.toast = ""
 	a.err = nil
 
-	if msg.To == msgs.ScreenDashboard {
-		a.lastRefresh = time.Now()
-	}
-
 	switch msg.To {
 	case msgs.ScreenDashboard:
 		a.dashboard, _ = a.dashboard.Update(a.screenWindowSizeMsg())
@@ -828,6 +874,8 @@ func (a App) handleNavigate(msg msgs.NavigateMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// screenWindowSizeMsg is the size a screen gets: the window less the
+// chrome above (topHeight) and below (bottomHeight) it.
 func (a App) screenWindowSizeMsg() tea.WindowSizeMsg {
 	return tea.WindowSizeMsg{
 		Width:  a.width,
@@ -835,6 +883,8 @@ func (a App) screenWindowSizeMsg() tea.WindowSizeMsg {
 	}
 }
 
+// topHeight is the height of the chrome above the screen: the toast line,
+// the error line when there is an error, and the header.
 func (a App) topHeight() int {
 	lines := []string{a.toast}
 	if a.err != nil {
@@ -844,6 +894,8 @@ func (a App) topHeight() int {
 	return lipgloss.Height(strings.Join(lines, "\n"))
 }
 
+// bottomHeight is the height of the chrome below the screen: the
+// Operations panel and the status bar, rendered as View renders them.
 func (a App) bottomHeight() int {
 	return lipgloss.Height(widgets.RenderOperationsPanel(a.operationsPanelLanes(), max(a.width-6, 40), a.operationsPanelFooter())) +
 		lipgloss.Height(widgets.RenderStatusBar(max(a.width-6, 40), a.statusBarState()))

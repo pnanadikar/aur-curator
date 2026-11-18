@@ -24,6 +24,7 @@ type ReviewChangedError struct {
 	Current  domain.Review // the review now stored
 }
 
+// Error names the package and both review IDs.
 func (e *ReviewChangedError) Error() string {
 	return fmt.Sprintf("review for %s changed while it was being viewed: expected %s, stored %s",
 		e.Package, e.Expected, e.Current.ID)

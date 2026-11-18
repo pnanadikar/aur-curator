@@ -5,9 +5,15 @@ package domain
 // accidental-leak path) can't expose the underlying value.
 type Secret string
 
-func (s Secret) String() string   { return "REDACTED" }
+// String returns "REDACTED", for %s and %v.
+func (s Secret) String() string { return "REDACTED" }
+
+// GoString returns "REDACTED", for %#v.
 func (s Secret) GoString() string { return "REDACTED" }
-func (s Secret) Value() string    { return string(s) }
+
+// Value returns the secret itself, for the code that must send it (the
+// Gitea token).
+func (s Secret) Value() string { return string(s) }
 
 // MarshalJSON redacts the secret so encoding/json can never write the
 // raw value (encoding/json ignores String()). There is deliberately no

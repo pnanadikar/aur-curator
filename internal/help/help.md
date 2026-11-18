@@ -11,6 +11,28 @@ repository (`pacman -S <pkg>`, `pacman -Syu`).
 It also ships CLI subcommands for one-shot operations that do not require
 the TUI.
 
+## Keys on every screen
+
+- `^T`: cancel the running operation (shown as `^T Cancel` while one
+  runs). If none can be cancelled, the queued operations are dropped.
+- `^C` or `^Q`: quit. With an operation running you are asked first:
+  `y` quits; `n` or `Esc` stays.
+
+The Nav Menu, on every screen except Review:
+
+- `1` Packages (the Dashboard), `2` Repository (Repository Status),
+  `4` Help; `3` Settings is not available yet
+- `q`: quit, asked first as above
+
+And:
+
+- `?`: the screen's keys (not on Help); `Esc` closes them
+- `Esc`: back to the previous screen (not on the Dashboard). A Nav Menu
+  key starts afresh, so after one there is no previous screen and `Esc`
+  does nothing.
+
+Review is left with `Esc`; it has no Nav Menu.
+
 ## Dashboard
 
 One row per curated package, under a header row naming the columns:

@@ -358,8 +358,10 @@ Drawn by the App, around every screen, not by the Dashboard:
 - **Header**: two lines above the screen's box. The first shows
   `aur-curator`, the running version dimmed (the same value as
   `--version`, #481) and the workspace path; the second shows the last refresh
-  time (`Last Refresh: HH:MM`), updated by `R` and by each package-list
-  load.
+  time (`Last Refresh: HH:MM`): when the package list last loaded
+  successfully, at start or on `R`. A failed load leaves it (the
+  Dashboard shows the error); before the first load it is `—`.
+  Navigating does not change it (#532).
 - **Toast row**: the very first line, above the header. Short messages
   such as `Operation cancelled: duplicati-bin`, a queue position, or a
   reset selection. Shown only while a toast is active.

@@ -90,6 +90,8 @@ func (c *FilesystemCatalog) Packages(ctx context.Context) ([]domain.PackageName,
 	return packages, rejected, nil
 }
 
+// RepositoryPath returns rootPath/<name>, after checking name is a valid
+// package name (PackageCatalog.RepositoryPath).
 func (c *FilesystemCatalog) RepositoryPath(name domain.PackageName) (string, error) {
 	// The AUR's rule also rules out "", ".", ".." and separators: "." would
 	// name rootPath itself, and remove would delete the workspace (#493).

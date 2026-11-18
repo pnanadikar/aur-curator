@@ -55,6 +55,7 @@ type detailLoadedMsg struct {
 // DetailTab identifies a tab within the Package Details screen.
 type DetailTab int
 
+// The tabs, in tab-bar order.
 const (
 	TabSummary DetailTab = iota
 	TabCommits
@@ -202,6 +203,8 @@ const (
 	detailFocusContent detailFocus = iota
 )
 
+// PackageDetailModel is the Package Details screen: one package's
+// summary, commits, build log and artifacts, in tabs.
 type PackageDetailModel struct {
 	deps    deps.Dependencies
 	pkgName domain.PackageName

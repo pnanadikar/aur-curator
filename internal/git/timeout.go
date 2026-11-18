@@ -52,6 +52,8 @@ type InterruptedError struct {
 	Err error
 }
 
+// Error is only the label: "cancelled", "timed out after <d>" or "timed
+// out".
 func (e *InterruptedError) Error() string {
 	switch {
 	case errors.Is(e.Cause, context.Canceled):
@@ -63,6 +65,8 @@ func (e *InterruptedError) Error() string {
 	}
 }
 
+// Unwrap returns the context's error and the stopped call's, for
+// errors.Is and errors.As.
 func (e *InterruptedError) Unwrap() []error { return []error{e.Cause, e.Err} }
 
 // Interrupted labels err when ctx is done: it returns an *InterruptedError

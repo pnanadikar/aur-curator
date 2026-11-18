@@ -52,6 +52,9 @@ type provider struct {
 	rootPath string
 }
 
+// New returns the git Provider: runner runs git, in the package
+// repositories catalog resolves; forge is the Gitea remote; rootPath is
+// the workspace, for the error log.
 func New(catalog catalog.PackageCatalog, runner Runner, forge Forge, rootPath string) Provider {
 	return &provider{
 		catalog:  catalog,

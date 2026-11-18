@@ -36,6 +36,7 @@ type Commit struct {
 // Diff tab; SRCINFO, Install, and Patch each get their own tab.
 type FileKind int
 
+// The file kinds; FileKind (above) says which tab each renders in.
 const (
 	FileKindPKGBUILD FileKind = iota
 	FileKindSRCINFO

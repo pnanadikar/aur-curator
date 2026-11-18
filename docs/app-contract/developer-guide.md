@@ -115,24 +115,31 @@ state.**
 `App.Update` calls `update`, then `syncScreenSize`, which re-forwards the
 content-area size to every screen whenever it changed. Chrome changes (a
 toast appearing, the panel growing) therefore resize every screen through
-one path. `update` handles messages in this order:
+one path. `update` is a dispatcher over one handler per stage, in this
+order (#529); a handler that returns `done` stops the message there,
+and otherwise the message goes on with the `App` the handler returned
+(the handler may have changed it):
 
-1. **Keys App owns.** While the quit-confirm modal is open it gets every
-   key. `Ctrl+C` / `Ctrl+Q` quit (through the same guard as below).
-   `Ctrl+T` cancels the active operation, or, if none is running, drops the
-   pending ones.
-2. **Navigation:** `NavigateMsg`, `BackMsg`, `ReviewDecisionBackMsg`,
-   `QuitRequestedMsg`.
-3. **Toast and error:** `ToastMsg`, the startup notice, toast expiry,
-   `ErrorMsg`.
-4. **Operation results** (`OperationCompleted/Failed/CancelledMsg`): finish
+1. **Window size and keys App owns** (`handleKeys`). `WindowSizeMsg`
+   resizes App and every screen. While the quit-confirm modal is open it
+   gets every key. `Ctrl+C` / `Ctrl+Q` quit (through the same guard as
+   below). `Ctrl+T` cancels the active operation and stops there; if none
+   is running it drops the pending ones and, like every other key, goes
+   on to the active screen (step 6).
+2. **Navigation** (`handleNavigation`): `NavigateMsg`, `BackMsg`,
+   `ReviewDecisionBackMsg`, `QuitRequestedMsg`.
+3. **Toast and error** (`handleToasts`): `ToastMsg`, `ToolDoneMsg`, the
+   startup notice, toast expiry, `ErrorMsg`.
+4. **Operation results** (`handleOperationResult`;
+   `OperationCompleted/Failed/CancelledMsg`): finish
    the active operation, update its lane, start the next one, show a toast.
    Not returned early: the message also continues to step 6.
-5. **Operation requests** (`*RequestedMsg`): enqueue and start if idle (see
-   § Operations Queue).
-6. **Delivery to screens:**
-   - operation results go to **every** screen, so each can refresh its
-     derived state whichever screen is active;
+5. **Operation requests** (`handleRequest`; `*RequestedMsg`): enqueue
+   and start if idle (see § Operations Queue), through one helper,
+   `enqueueRequest`, for every kind.
+6. **Delivery to screens** (`forward`):
+   - operation results go to **every** screen except Help, which has no
+     derived state, so each can refresh whichever screen is active;
    - `PackagesLoadedMsg`, `ReviewDataMsg` and `AURUpdateMsg` always go to
      the Dashboard, even when another screen is active (#286);
    - everything else goes to the active screen only.

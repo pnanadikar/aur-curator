@@ -10,6 +10,7 @@ import (
 // Screen identifies one of the top-level application views.
 type Screen int
 
+// The screens. Settings is not implemented yet.
 const (
 	ScreenDashboard Screen = iota
 	ScreenPackageDetail

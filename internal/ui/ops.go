@@ -11,6 +11,7 @@ import (
 // OperationKind identifies the kind of work an Operation represents.
 type OperationKind int
 
+// The operation kinds, one per request message (msgs.*RequestedMsg).
 const (
 	OpFetch OperationKind = iota
 	OpAnalyze
@@ -43,6 +44,7 @@ func (k OperationKind) String() string {
 // Lane identifies one of the four fixed lanes in the Operations Panel.
 type Lane string
 
+// The lanes, in panel order.
 const (
 	LaneFetch   Lane = "fetch"
 	LaneAnalyze Lane = "analyze"
@@ -85,6 +87,7 @@ type Operation struct {
 // OperationStatus is the visible status of a single lane.
 type OperationStatus string
 
+// The lane statuses.
 const (
 	StatusIdle      OperationStatus = "idle"
 	StatusRunning   OperationStatus = "running"

@@ -69,6 +69,7 @@ type ReviewDataMsg struct {
 // Each constant corresponds to one card in the dashboard's SummaryCard row.
 type CardID string
 
+// The summary cards; dashboardCards gives their row order.
 const (
 	CardPackages  CardID = "packages"
 	CardAUR       CardID = "aur"
@@ -131,6 +132,8 @@ type localCommitsResult struct {
 	err error
 }
 
+// DashboardModel is the Dashboard screen: one row per curated package,
+// the summary cards, and the package actions.
 type DashboardModel struct {
 	deps          deps.Dependencies
 	packages      []domain.PackageName
@@ -149,7 +152,7 @@ type DashboardModel struct {
 	skipped     []domain.PackageName
 	loading     bool
 	allData     bool
-	lastRefresh time.Time
+	lastRefresh time.Time // the last successful package-list load (#532)
 	lastHeight  int
 	width       int
 
@@ -755,7 +758,6 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			if len(m.packages) == 0 {
 				m.loading = true
 			}
-			m.lastRefresh = time.Now()
 			tracedCtx := trace.Start(context.Background(), "refresh")
 			trace.Log(tracedCtx, "key", "action", "refresh")
 			ctx, _ := git.GitTimeoutCtx(tracedCtx) // cancel discarded — this ctx escapes into PackagesLoadedMsg.TraceCtx for later async reuse
@@ -873,6 +875,12 @@ func (m DashboardModel) RecommendedSize(terminalHeight int) (lines, cols int) {
 	lines = terminalHeight + max(widgets.MinFlexHeight-m.listRowsLeft(m.lastHeight), 0)
 	cols = max(lipgloss.Width(m.View()), theme.MinScreenWidth) + widgets.ScreenBodyMargin
 	return lines, cols
+}
+
+// LastRefresh is when the package list last loaded successfully, at start
+// or on R; zero before the first load (#532).
+func (m DashboardModel) LastRefresh() time.Time {
+	return m.lastRefresh
 }
 
 // View renders the dashboard screen.

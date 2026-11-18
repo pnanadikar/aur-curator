@@ -20,6 +20,8 @@ type NotFastForwardError struct {
 	LocalCommits int    // commits on master that are not in Commit
 }
 
+// Error names the package, the reviewed commit and the local commits in
+// the way.
 func (e *NotFastForwardError) Error() string {
 	short := e.Commit
 	if len(short) > 7 {
